@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools==75.2.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mine-twin"
+version = "0.1.0"
+description = "Marco de gemelo digital federado para mantenimiento predictivo"
+readme = "README.md"
+requires-python = "==3.12.*"
+dependencies = [
+    "numpy==1.26.4",
+    "plotly==6.4.0",
+    "pydantic==2.13.5",
+    "streamlit==1.63.0",
+]
+
+[project.optional-dependencies]
+learning = [
+    "torch==2.14.0",
+]
+dev = [
+    "pytest==9.0.1",
+    "ruff==0.16.5",
+]
+
+[project.scripts]
+minetwin = "minetwin.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["minetwin*"]
+
+[tool.setuptools.package-data]
+minetwin = ["styles.css"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"

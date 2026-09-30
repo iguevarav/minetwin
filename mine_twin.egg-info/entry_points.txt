@@ -1,0 +1,2 @@
+[console_scripts]
+minetwin = minetwin.__main__:main

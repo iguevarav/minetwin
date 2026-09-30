@@ -1,0 +1,243 @@
+# MineTwin
+
+MineTwin es un prototipo académico en Python para estudiar mantenimiento predictivo en una flota heterogénea de camiones de acarreo simulados. Integra telemetría JSON, XML y CSV, mantiene gemelos locales, agrega vistas mediante una federación lógica y compara políticas de mantenimiento bajo condiciones reproducibles.
+
+## Estado
+
+Las fases de simulación, pronóstico, mantenimiento, federación, evaluación experimental e integración con Langflow están implementadas. La interfaz, la instalación reproducible y la documentación técnica están consolidadas. Las verificaciones finales excluidas de esta entrega se enumeran al final.
+
+## Alcance
+
+- Nueve camiones ficticios distribuidos en tres nodos.
+- Ciclo operativo de espera, carga, acarreo, descarga y retorno.
+- Diagnóstico explicable de motor, frenos y seis neumáticos.
+- Pronóstico del motor mediante tendencia de un indicador observable.
+- Órdenes preventivas y correctivas con parada y efecto sobre el componente.
+- Desconexión de nodos con continuidad local y recuperación de la vista central.
+- Comparación reproducible entre políticas sin intervención, por umbral y predictiva.
+- Explicaciones bajo demanda mediante Langflow y Ollama.
+
+El sistema usa datos sintéticos y una federación lógica en un único proceso. No representa una red industrial ni modelos físicos calibrados con camiones reales.
+
+## Arquitectura
+
+```mermaid
+flowchart LR
+    A[Activos simulados] --> B[Nodos Alpha, Beta y Gamma]
+    B --> C[Adaptadores JSON, XML y CSV]
+    C --> D[Contrato canónico]
+    D --> E[Gemelos locales]
+    E --> F[Diagnóstico y pronóstico]
+    F --> G[Alertas y mantenimiento]
+    E --> H[Coordinador federado]
+    H --> I[Interfaz Streamlit]
+    H --> J[Langflow y Ollama]
+    E --> K[Evaluación experimental]
+```
+
+La lógica de dominio no depende de Streamlit, Plotly ni Langflow. El modelo de lenguaje explica evidencia ya calculada y no modifica la simulación, las órdenes o las políticas.
+
+## Estructura
+
+| Ruta | Responsabilidad |
+|---|---|
+| `app.py` | Entrada de la interfaz Streamlit |
+| `minetwin/domain.py` | Entidades, estados e invariantes |
+| `minetwin/simulation.py` | Activo simulado, reloj, ruido y escenarios |
+| `minetwin/telemetry.py` | Validación del contrato canónico |
+| `minetwin/adapters.py` | Conversión de JSON, XML y CSV |
+| `minetwin/quality.py` | Calidad, duplicados, tardíos y retención |
+| `minetwin/analytics.py` | Diagnóstico del motor |
+| `minetwin/components.py` | Diagnóstico de frenos y neumáticos |
+| `minetwin/prediction.py` | Tendencia y tiempo hasta umbral |
+| `minetwin/maintenance.py` | Ciclo de vida de órdenes e intervenciones |
+| `minetwin/federation.py` | Nodos locales y coordinación |
+| `minetwin/evaluation.py` | Evaluación de flota y reportes |
+| `minetwin/langflow_client.py` | Contexto explicativo y cliente HTTP |
+| `minetwin/langflow_evaluation.py` | Casos y revisión de Langflow |
+| `minetwin/ui.py` | Navegación y vistas principales |
+
+## Instalación
+
+Se requiere Python 3.12.
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
+```
+
+Las versiones están fijadas en `pyproject.toml`.
+
+## Aplicación
+
+```powershell
+python -m streamlit run app.py
+```
+
+La interfaz contiene Resumen, Telemetría, Alertas, Mantenimiento y Federación. El estado permanece en la sesión y solo avanza mediante los controles de simulación.
+
+Ejecución sin interfaz:
+
+```powershell
+python -m minetwin --steps 180 --scenario engine_degradation
+python -m minetwin --fleet --steps 180 --scenario normal
+```
+
+Escenarios disponibles:
+
+| Escenario | Propósito |
+|---|---|
+| `normal` | Operación de referencia |
+| `engine_degradation` | Degradación progresiva del motor |
+| `engine_variable_degradation` | Degradación no lineal dependiente del régimen |
+| `brake_stress` | Sobretemperatura contextual de frenos |
+| `tire_leak` | Pérdida persistente de presión en la rueda FL |
+
+## Flota y datos
+
+| Nodo | Camiones | Perfil | Capacidad | Formato |
+|---|---|---|---:|---|
+| Alpha | TRUCK-001 a TRUCK-003 | SIM-ALPHA | 150 t | JSON |
+| Beta | TRUCK-004 a TRUCK-006 | SIM-BETA | 220 t | XML |
+| Gamma | TRUCK-007 a TRUCK-009 | SIM-GAMMA | 180 t | CSV |
+
+### Diccionario de señales
+
+| Señal canónica | Unidad | Uso |
+|---|---|---|
+| `load_ratio` | 1 | Carga relativa y contexto operacional |
+| `engine_temperature` | °C | Diagnóstico e indicador del motor |
+| `engine_vibration` | mm/s | Diagnóstico e indicador del motor |
+| `operating_hours` | h | Eje temporal del pronóstico |
+| `brake_temperature` | °C | Diagnóstico contextual de frenos |
+| `slope_percent` | % | Corrección de la referencia de frenos |
+| `tire_pressure_FL` | kPa | Presión delantera izquierda |
+| `tire_pressure_FR` | kPa | Presión delantera derecha |
+| `tire_pressure_RL1` | kPa | Presión trasera izquierda 1 |
+| `tire_pressure_RR1` | kPa | Presión trasera derecha 1 |
+| `tire_pressure_RL2` | kPa | Presión trasera izquierda 2 |
+| `tire_pressure_RR2` | kPa | Presión trasera derecha 2 |
+
+Cada lectura conserva valor, unidad, calidad y motivo. Los valores ausentes o inválidos no se sustituyen por cero. XML y CSV convierten sus unidades al contrato canónico antes del diagnóstico.
+
+## Simulación y calidad
+
+El reloj simulado avanza en pasos configurables. La semilla y el instante simulado determinan el ruido de cada sensor, por lo que una reparación no altera el ruido que corresponde a otro instante. El horómetro avanza únicamente durante operación disponible.
+
+La capa de calidad rechaza identidades inválidas, registra duplicados y paquetes tardíos, detecta cargas incompatibles con el régimen y mantiene historiales acotados. Durante una desconexión el nodo continúa procesando localmente, mientras el coordinador conserva una vista marcada como desactualizada.
+
+## Diagnóstico, pronóstico y mantenimiento
+
+El diagnóstico del motor compara temperatura y vibración contra referencias específicas del perfil y del estado operativo. Las alertas usan persistencia e histéresis. Frenos incorporan carga y pendiente; neumáticos detectan presión baja y pérdida sostenida por rueda.
+
+El predictor combina los residuos del motor en un indicador observable, ajusta una tendencia contra horas operativas y extrapola hasta el umbral configurado. Exige historial suficiente, pendiente positiva y estabilidad mínima. El resultado puede ser estimable, no estimable o fuera del horizonte.
+
+Las órdenes pasan por estados abierta, en progreso, completada o cancelada. Una intervención en progreso detiene el camión y aplica su efecto una sola vez. Las políticas automáticas usan el mismo ciclo de vida que las órdenes manuales.
+
+## Experimentos
+
+Comparación de un camión:
+
+```powershell
+python -m minetwin --compare --steps 450 --scenario engine_degradation --output results\comparison_run
+```
+
+Calibración de flota:
+
+```powershell
+python -m minetwin --evaluate-fleet --dataset-role calibration --output results\fleet_calibration
+```
+
+Evaluación independiente:
+
+```powershell
+python -m minetwin --evaluate-fleet --dataset-role evaluation --output results\fleet_evaluation
+```
+
+Cada directorio de salida debe ser nuevo. La evaluación genera manifiesto, métricas por trayectoria, eventos, predicciones, diferencias pareadas, pruebas de interoperabilidad y continuidad, resúmenes y reporte HTML.
+
+## Langflow y Ollama
+
+Configuración validada:
+
+```text
+Langflow: 1.12.2 en Docker
+Ollama: http://host.docker.internal:11434
+Modelo: llama3.2:latest
+Prompt: minetwin-explanation-2
+```
+
+Variables para la terminal que ejecuta MineTwin:
+
+```powershell
+$env:MINETWIN_LANGFLOW_URL = 'http://127.0.0.1:7860'
+$env:MINETWIN_LANGFLOW_FLOW_ID = 'e986074a63904e01b011fd6ab0f5838f'
+$env:MINETWIN_LANGFLOW_API_KEY = 'CLAVE_API_DE_LANGFLOW'
+$env:MINETWIN_LANGFLOW_FLOW_VERSION = '1'
+$env:MINETWIN_LANGFLOW_MODEL_ID = 'llama3.2:latest'
+$env:MINETWIN_LANGFLOW_PROMPT_VERSION = 'minetwin-explanation-2'
+$env:MINETWIN_LANGFLOW_TIMEOUT_SECONDS = '300'
+```
+
+El proyecto no carga archivos `.env`. Las variables se definen en la terminal o en el mecanismo de secretos del entorno. Las credenciales no se guardan en el repositorio.
+
+Evaluación del asistente:
+
+```powershell
+$output = "results\langflow_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+python -m minetwin --evaluate-langflow --output $output
+```
+
+Después se completan las puntuaciones de las respuestas recibidas en `review.csv` y se genera el resumen:
+
+```powershell
+python -m minetwin --summarize-langflow-review --output $output
+```
+
+## Resultados
+
+La evaluación independiente ejecutó 810 trayectorias: nueve camiones, tres escenarios, tres políticas y diez semillas. También produjo 540 diferencias pareadas, nueve casos de interoperabilidad y diez de continuidad.
+
+| Escenario | Política | Resultado principal |
+|---|---|---|
+| Normal | Todas | Disponibilidad 100 %, sin fallas ni falsas alertas |
+| Degradación lineal | Sin mantenimiento | Una falla por trayectoria; disponibilidad 80,74 % |
+| Degradación lineal | Umbral | Sin fallas; disponibilidad 86,67 %; tres intervenciones por trayectoria |
+| Degradación lineal | Predictiva | Sin fallas, pero disponibilidad aproximada de 75,5 % a 76,8 % por exceso de intervenciones |
+| Degradación variable | Sin mantenimiento | Una falla por trayectoria; disponibilidad 72,78 % |
+| Degradación variable | Umbral | Sin fallas; disponibilidad 86,67 % |
+| Degradación variable | Predictiva | Sin fallas, pero disponibilidad aproximada de 64,4 % a 64,6 % |
+
+La política predictiva actual evita fallas, pero interviene con demasiada frecuencia. Bajo esta configuración, la política por umbral ofrece el mejor equilibrio entre fallas, intervenciones y disponibilidad. El resultado no demuestra que el mantenimiento predictivo sea inferior en general; muestra que esta regla y estos parámetros requieren mejor calibración.
+
+Los nueve casos de interoperabilidad conservaron equivalencia canónica y rechazaron entradas defectuosas. Los diez casos de continuidad mantuvieron operación local, marcaron la vista central como desactualizada y recuperaron el estado vigente al reconectar.
+
+La evaluación Langflow con el prompt v2 obtuvo siete respuestas para siete casos consultables y bloqueó correctamente el caso desconectado. Las siete respuestas respetaron el límite de palabras; la latencia media fue 36,84 segundos y la máxima 56,49 segundos en el equipo evaluado. La fidelidad semántica debe interpretarse mediante `review.csv` y `review_summary.json` cuando se complete la revisión.
+
+## Limitaciones
+
+- Datos, fallas y parámetros completamente sintéticos.
+- Ecuaciones simplificadas sin calibración industrial.
+- Nodos federados dentro de un único proceso.
+- Estado operativo almacenado en memoria y perdido al reiniciar.
+- Pronóstico evaluado únicamente para el motor.
+- Frenos y neumáticos disponen de diagnóstico, pero no de RUL.
+- La calidad de las explicaciones depende del modelo local y del hardware.
+- La política predictiva necesita calibración adicional para reducir intervenciones.
+- Los resultados no se generalizan a una flota real sin datos y validación externos.
+
+## Verificación disponible
+
+```powershell
+python -m pytest -q -p no:cacheprovider
+python -m ruff check .
+```
+
+## Pendientes excluidos de esta entrega
+
+- Exportar la definición del flujo Langflow.
+- Añadir trazabilidad persistente de flujo, prompt, modelo y observación.
+- Preparar el guion de demostración.
+- Ejecutar la suite completa, Ruff y el recorrido manual final.

@@ -1,0 +1,11 @@
+numpy==1.26.4
+plotly==6.4.0
+pydantic==2.13.5
+streamlit==1.63.0
+
+[dev]
+pytest==9.0.1
+ruff==0.16.5
+
+[learning]
+torch==2.14.0

@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+results/
+minetwin/data/scania/*.csv
