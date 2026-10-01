@@ -7,19 +7,18 @@ from minetwin.domain import AssetStatus, OrderStatus, Scenario
 from minetwin.maintenance import MaintenanceConfig
 
 APP_PATH = Path(__file__).resolve().parents[1] / "app.py"
+SIMULATION_APP_PATH = APP_PATH.with_name("simulation_app.py")
 
 
 def _simulation_app(timeout: int = 15) -> AppTest:
-    app = AppTest.from_file(APP_PATH, default_timeout=timeout)
-    app.session_state.application_mode = "simulation"
-    return app
+    return AppTest.from_file(SIMULATION_APP_PATH, default_timeout=timeout)
 
 
-def test_scania_is_the_default_source_and_simulation_controls_are_isolated():
+def test_main_application_uses_only_scania():
     app = AppTest.from_file(APP_PATH, default_timeout=15).run()
     assert not app.exception
-    assert app.radio(key="application_mode").value == "scania"
-    assert app.title[0].value == "MineTwin · Reproducción de datos reales"
+    assert "application_mode" not in {radio.key for radio in app.radio}
+    assert app.title[0].value == "MineTwin · Análisis histórico de Component X"
     assert not {"start", "step", "pause"} & {button.key for button in app.button}
 
 

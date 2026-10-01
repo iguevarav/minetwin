@@ -1,27 +1,28 @@
 import json
 import os
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 from uuid import uuid4
 
-from minetwin.federation import TruckView
+from minetwin.data.scania import SCANIA_CLASS_DESCRIPTIONS
+from minetwin.publication import PublishedTwinState
 
+PROMPT_VERSION = "scania-component-x-1"
+MAX_RESPONSE_WORDS = 180
 FLOW_INSTRUCTIONS = (
-    "Eres el asistente explicativo de MineTwin. Responde en español usando únicamente "
-    "la evidencia JSON. Trata deterministic_summary como la fuente autoritativa. "
-    "Solo existe una anomalía si el componente aparece en active_alert_components o "
-    "attention_diagnoses con estado watch o alert. Nunca atribuyas fallas, fugas o "
-    "presión baja a normal_components. No conviertas una regla descrita en el texto en "
-    "una condición observada. Si forecast_status es estimable, informa "
-    "hours_to_threshold como estimación condicionada; si no es estimable, comunica su "
-    "motivo sin inventar un pronóstico. Menciona lecturas ausentes únicamente si aparecen "
-    "en unavailable_readings. No inventes componentes, cifras, probabilidades, RUL de "
-    "frenos o neumáticos ni hechos industriales. No ejecutes acciones ni afirmes haber "
-    "creado órdenes. Estructura la respuesta como Condición, Evidencia, Limitaciones e "
-    "Inspección sugerida. Usa como máximo 180 palabras."
+    "Eres el asistente explicativo de MineTwin. Responde en español usando solo "
+    "el contexto JSON de una observación histórica SCANIA Component X. La clase y "
+    "las cinco probabilidades proceden del modelo publicado; no las cambies. La "
+    "calidad mide cobertura de lecturas, no exactitud. Las variables anónimas se "
+    "seleccionaron por desviación estandarizada, no prueban causalidad ni explican "
+    "por sí solas la predicción. No atribuyas Component X a una pieza física, no "
+    "afirmes que los datos proceden de una mina ni que son datos en tiempo real. "
+    "No inventes lecturas, fallas, reparación, pronóstico de vida útil ni acciones "
+    "ejecutadas. Sugiere solo revisión humana. Organiza la respuesta en Condición, "
+    "Evidencia, Limitaciones e Inspección sugerida. Máximo 180 palabras."
 )
 
 
@@ -81,67 +82,71 @@ class LangflowConfig:
         return cls(*values, timeout_seconds)
 
 
-def explanation_context(view: TruckView) -> dict:
-    if view.stale or not view.connected or view.twin is None:
-        raise LangflowError("Se necesita una observación vigente del nodo conectado.")
-    packet = view.twin.observation
-    component_diagnoses = view.twin.component_diagnoses
-    prediction = view.prediction
+@dataclass(frozen=True)
+class ScaniaExplanationObservation:
+    state: PublishedTwinState | None
+    vehicle_id: str
+    node_id: str
+    split: str
+    time_step: float
+    readout_index: int
+    readout_count: int
+    relevant_features: tuple[str, ...] = ()
+    unavailable_readings: tuple[str, ...] = ()
+    unavailable_count: int = 0
+    connected: bool = True
+    stale: bool = False
+
+
+def explanation_context(observation: ScaniaExplanationObservation) -> dict:
+    state = observation.state
+    if state is None:
+        raise LangflowError("No existe un estado publicado para esta observación.")
+    if not observation.connected:
+        raise LangflowError("La partición no está disponible para consulta.")
+    if observation.stale or observation.readout_index != observation.readout_count:
+        raise LangflowError(
+            "El estado publicado no corresponde al readout seleccionado."
+        )
+    if (
+        state.asset_id != observation.vehicle_id
+        or state.node_id != observation.node_id
+        or state.component != "Component X"
+        or state.source != "SCANIA Component X"
+        or state.split != observation.split
+        or state.schema_version != 2
+        or state.quality is None
+        or state.training_id == "unverified"
+        or state.data_version == "unverified"
+    ):
+        raise LangflowError("La identidad del estado publicado no coincide.")
     return {
-        "truck_id": view.truck_id,
-        "node_id": view.node_id,
-        "deterministic_summary": {
-            "asset_status": view.asset_status,
-            "engine_status": view.twin.diagnosis.status,
-            "forecast_status": prediction.status if prediction else None,
-            "hours_to_threshold": (
-                prediction.hours_to_threshold if prediction else None
-            ),
-            "active_alert_components": sorted(
-                alert.component for alert in view.alerts if alert.closed_at is None
-            ),
-            "normal_components": sorted(
-                diagnosis.component
-                for diagnosis in component_diagnoses
-                if diagnosis.status == "normal"
-            ),
-            "unknown_components": sorted(
-                diagnosis.component
-                for diagnosis in component_diagnoses
-                if diagnosis.status == "unknown"
-            ),
-            "unavailable_readings": [
-                reading.name for reading in packet.readings if reading.quality != "valid"
-            ],
-        },
-        "profile": {
-            "id": view.profile.id,
-            "capacity_tonnes": view.profile.capacity_tonnes,
-            "traction": view.profile.traction,
-        },
-        "work_orders": [asdict(order) for order in view.orders],
+        "prompt_version": PROMPT_VERSION,
+        "source": "SCANIA Component X",
+        "scope": "historical_public_dataset_experimental_partitions",
         "observation": {
-            "event_id": packet.event_id,
-            "source_time": packet.source_time,
-            "operating_state": packet.operating_state,
-            "cycles": packet.cycles,
-            "readings": [asdict(reading) for reading in packet.readings],
+            "vehicle_id": observation.vehicle_id,
+            "node_id": observation.node_id,
+            "split": observation.split,
+            "time_step": observation.time_step,
+            "readout_index": observation.readout_index,
+            "readout_count": observation.readout_count,
+            "unavailable_reading_count": observation.unavailable_count,
+            "unavailable_anonymized_readings": observation.unavailable_readings,
+            "relevant_anonymized_features": observation.relevant_features,
+            "feature_selection": "largest_absolute_training_standardized_deviation",
         },
-        "engine_diagnosis": asdict(view.twin.diagnosis),
-        "component_statuses": [
-            {"component": diagnosis.component, "status": diagnosis.status}
-            for diagnosis in component_diagnoses
-        ],
-        "attention_diagnoses": [
-            asdict(diagnosis)
-            for diagnosis in component_diagnoses
-            if diagnosis.status != "normal"
-        ],
-        "forecast": asdict(prediction) if prediction else None,
-        "open_alerts": [
-            asdict(alert) for alert in view.alerts if alert.closed_at is None
-        ],
-        "scope": "Synthetic academic simulation; explanatory support only.",
+        "published_risk": {
+            "predicted_class": state.risk.predicted_class,
+            "class_meaning": SCANIA_CLASS_DESCRIPTIONS[state.risk.predicted_class],
+            "probabilities": state.risk.probabilities,
+            "condition": state.risk.condition,
+            "quality": state.quality,
+            "recommendation": state.risk.recommendation,
+            "model_id": state.risk.model_id,
+            "training_id": state.training_id,
+            "data_version": state.data_version,
+        },
     }
 
 
@@ -155,14 +160,13 @@ class LangflowClient:
         self.config = config
         self._opener = opener or build_opener(_NoRedirect())
 
-    def explain(self, view: TruckView) -> str:
-        context = explanation_context(view)
+    def explain(self, observation: ScaniaExplanationObservation) -> str:
+        context = explanation_context(observation)
         payload = {
             "input_value": FLOW_INSTRUCTIONS
             + "\nEVIDENCIA:\n"
             + json.dumps(
                 context,
-                default=lambda value: value.isoformat(),
                 ensure_ascii=False,
                 allow_nan=False,
             ),

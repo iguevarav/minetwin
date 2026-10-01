@@ -2,27 +2,27 @@ import csv
 import hashlib
 import json
 import os
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from time import perf_counter
+from urllib.error import URLError
 
-from minetwin.domain import (
-    Diagnosis,
-    EnginePrediction,
-    EngineStatus,
-    ForecastStatus,
-    Quality,
-    Scenario,
-)
-from minetwin.federation import FederatedFleet, TruckView
+import numpy as np
+
+from minetwin.data.scania import DatasetSplit, ScaniaReplaySession, ScaniaReplayStore
 from minetwin.langflow_client import (
     FLOW_INSTRUCTIONS,
+    MAX_RESPONSE_WORDS,
+    PROMPT_VERSION,
     LangflowClient,
     LangflowConfig,
     LangflowError,
+    ScaniaExplanationObservation,
     explanation_context,
 )
-from minetwin.simulation import SimulationConfig
+from minetwin.learning.provenance import file_sha256
+from minetwin.paths import DATASET_ROOT, RESULTS_ROOT
+from minetwin.scania_explanation import ScaniaExplanationSource
 
 REVIEW_FIELDS = (
     "case_id",
@@ -32,131 +32,125 @@ REVIEW_FIELDS = (
     "within_word_limit",
     "state_unchanged",
     "factual_accuracy_0_to_2",
-    "component_identification_0_to_2",
+    "class_and_scope_0_to_2",
     "uncertainty_handling_0_to_2",
     "no_unsupported_action_claim_0_to_2",
     "reviewer",
     "review_notes",
 )
-SCORE_FIELDS = (
-    "factual_accuracy_0_to_2",
-    "component_identification_0_to_2",
-    "uncertainty_handling_0_to_2",
-    "no_unsupported_action_claim_0_to_2",
-)
+SCORE_FIELDS = REVIEW_FIELDS[6:10]
+
+
+@dataclass(frozen=True)
+class LangflowCase:
+    case_id: str
+    observation: ScaniaExplanationObservation
+    observed_class: int | None
+    kind: str = "dataset"
+    transport_fault: str | None = None
+
+
+class _FailingOpener:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    def open(self, request, timeout):
+        raise self.error
 
 
 def _json_value(value: object) -> str:
-    return json.dumps(
-        value,
-        default=lambda item: item.isoformat(),
-        ensure_ascii=False,
-        sort_keys=True,
-        allow_nan=False,
-    )
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)
 
 
 def _fingerprint(value: object) -> str:
-    return hashlib.sha256(_json_value(value).encode()).hexdigest()
+    return hashlib.sha256(_json_value(value).encode("utf-8")).hexdigest()
 
 
-def _scenario_view(scenario: Scenario, steps: int) -> TruckView:
-    fleet = FederatedFleet(SimulationConfig(seed=42, scenario=scenario))
-    fleet.advance(steps)
-    return fleet.view("TRUCK-001")
+def _latest_observation(
+    source: ScaniaExplanationSource,
+    store: ScaniaReplayStore,
+    vehicle_id: str,
+) -> ScaniaExplanationObservation:
+    session = ScaniaReplaySession(
+        store,
+        DatasetSplit(source.split),
+        vehicle_id=vehicle_id,
+        window_size=source.vectorizer.config.window_size,
+    )
+    session.advance(session.readout_count)
+    return source.observation(session.view, source.regime)
 
 
-def _missing_engine_view() -> TruckView:
-    view = _scenario_view(Scenario.NORMAL, 30)
-    observation = view.twin.observation
-    readings = tuple(
-        replace(
-            reading,
-            value=None,
-            quality=Quality.MISSING,
-            reason="Lectura ausente para el caso de evaluación.",
+def langflow_cases(
+    source: ScaniaExplanationSource, store: ScaniaReplayStore
+) -> tuple[LangflowCase, ...]:
+    cases = []
+    for label in range(5):
+        for index in np.flatnonzero(source.cached.labels == label):
+            vehicle_id = str(source.cached.vehicle_ids[index])
+            if vehicle_id not in source.states:
+                continue
+            observation = _latest_observation(source, store, vehicle_id)
+            if not observation.stale:
+                cases.append(LangflowCase(f"class_{label}", observation, label))
+                break
+    if not cases:
+        raise ValueError("No hay estados SCANIA vigentes para evaluar.")
+    missing = next(
+        (case for case in cases if case.observation.unavailable_count), None
+    )
+    if missing is None:
+        for vehicle_id in source.states:
+            observation = _latest_observation(source, store, vehicle_id)
+            if observation.unavailable_count and not observation.stale:
+                missing = LangflowCase(
+                    "missing_readings",
+                    observation,
+                    source.observed_class(vehicle_id),
+                )
+                break
+    else:
+        missing = replace(missing, case_id="missing_readings")
+    if missing is None:
+        raise ValueError("No se encontró un readout SCANIA con valores ausentes.")
+    cases.append(missing)
+    reference = cases[0]
+    for case_id, change in (
+        ("missing_state", {"state": None}),
+        ("stale_observation", {"stale": True}),
+        ("disconnected_node", {"connected": False}),
+    ):
+        cases.append(
+            LangflowCase(
+                case_id,
+                replace(reference.observation, **change),
+                reference.observed_class,
+                kind="local_fault_injection",
+            )
         )
-        if reading.name == "engine_temperature"
-        else reading
-        for reading in observation.readings
-    )
-    diagnosis = Diagnosis(
-        EngineStatus.UNKNOWN,
-        "No estimable: falta una lectura válida de engine_temperature.",
-    )
-    prediction = EnginePrediction(
-        observation.source_time,
-        ForecastStatus.NOT_ESTIMABLE,
-        "Faltan señales esenciales válidas.",
-    )
-    twin = replace(
-        view.twin,
-        observation=replace(observation, readings=readings),
-        diagnosis=diagnosis,
-    )
-    return replace(view, twin=twin, prediction=prediction)
-
-
-def _maintenance_view() -> TruckView:
-    fleet = FederatedFleet(SimulationConfig(seed=42))
-    fleet.advance(30)
-    truck = fleet.local("TRUCK-001")
-    order = truck.create_order(reason="Caso de evaluación de mantenimiento.")
-    truck.start_order(order.id)
-    fleet.advance()
-    return fleet.view("TRUCK-001")
-
-
-def _disconnected_view() -> TruckView:
-    fleet = FederatedFleet(SimulationConfig(seed=42))
-    fleet.advance(30)
-    fleet.set_connected("alpha", False)
-    return fleet.view("TRUCK-001")
-
-
-def langflow_cases() -> tuple[tuple[str, TruckView], ...]:
-    return (
-        ("normal", _scenario_view(Scenario.NORMAL, 30)),
-        (
-            "engine_degradation",
-            _scenario_view(Scenario.ENGINE_DEGRADATION, 180),
-        ),
-        (
-            "engine_variable_degradation",
-            _scenario_view(Scenario.ENGINE_VARIABLE_DEGRADATION, 180),
-        ),
-        ("brake_stress", _scenario_view(Scenario.BRAKE_STRESS, 100)),
-        ("tire_leak", _scenario_view(Scenario.TIRE_LEAK, 100)),
-        ("missing_engine_signal", _missing_engine_view()),
-        ("maintenance", _maintenance_view()),
-        ("disconnected", _disconnected_view()),
-    )
-
-
-def _expected(view: TruckView) -> dict:
-    return {
-        "asset_status": view.asset_status,
-        "engine_status": view.twin.diagnosis.status if view.twin else None,
-        "forecast_status": view.prediction.status if view.prediction else None,
-        "open_alert_components": sorted(
-            alert.component for alert in view.alerts if alert.closed_at is None
-        ),
-        "unknown_components": sorted(
-            diagnosis.component
-            for diagnosis in view.twin.component_diagnoses
-            if diagnosis.status == EngineStatus.UNKNOWN
+    for fault in ("connection_error", "timeout"):
+        cases.append(
+            LangflowCase(
+                fault,
+                reference.observation,
+                reference.observed_class,
+                kind="transport_fault_injection",
+                transport_fault=fault,
+            )
         )
-        if view.twin
-        else [],
-        "stale": view.stale,
-        "connected": view.connected,
-    }
+    return tuple(cases)
 
 
 def run_langflow_evaluation(
     output: Path,
     client: LangflowClient | None = None,
+    cases: tuple[LangflowCase, ...] | None = None,
+    flow_definition: Path | None = None,
 ) -> list[dict]:
+    if cases is None and flow_definition is None:
+        raise ValueError(
+            "Exporta el flujo Langflow y pásalo con --flow-definition."
+        )
     active_client = client
     if active_client is None:
         configuration = LangflowConfig.from_environment()
@@ -166,17 +160,53 @@ def run_langflow_evaluation(
                 "MINETWIN_LANGFLOW_API_KEY."
             )
         active_client = LangflowClient(configuration)
+    source = None
+    if cases is None:
+        source = ScaniaExplanationSource()
+        if source.split != "validation":
+            raise ValueError("La evaluación requiere el split validation etiquetado.")
+        store = ScaniaReplayStore(
+            DATASET_ROOT, RESULTS_ROOT / "phase1_replay" / "index.json"
+        )
+        cases = langflow_cases(source, store)
+    definition = None
+    if flow_definition is not None:
+        definition = Path(flow_definition).read_bytes()
+        json.loads(definition)
+    output = Path(output)
     output.mkdir(parents=True, exist_ok=False)
     manifest_path = output / "manifest.json"
+    if definition is not None:
+        (output / "flow_definition.json").write_bytes(definition)
+    (output / "prompt.txt").write_text(FLOW_INSTRUCTIONS, encoding="utf-8")
+    flow_hash = hashlib.sha256(definition).hexdigest() if definition else None
     manifest = {
         "status": "running",
+        "source": "SCANIA Component X validation",
         "flow_id": active_client.config.flow_id,
-        "flow_version": os.environ.get("MINETWIN_LANGFLOW_FLOW_VERSION", ""),
-        "prompt_version": os.environ.get(
-            "MINETWIN_LANGFLOW_PROMPT_VERSION", "minetwin-explanation-2"
-        ),
-        "model_id": os.environ.get("MINETWIN_LANGFLOW_MODEL_ID", ""),
+        "flow_version": os.environ.get("MINETWIN_LANGFLOW_FLOW_VERSION")
+        or (flow_hash[:12] if flow_hash else None),
+        "flow_definition_sha256": flow_hash,
+        "prompt_version": PROMPT_VERSION,
         "prompt_sha256": hashlib.sha256(FLOW_INSTRUCTIONS.encode()).hexdigest(),
+        "language_model_id": os.environ.get("MINETWIN_LANGFLOW_MODEL_ID", ""),
+        "predictive_models": sorted(
+            {
+                case.observation.state.risk.model_id
+                for case in cases
+                if case.observation.state is not None
+            }
+        ),
+        "observed_classes_evaluated": sorted(
+            {
+                case.observed_class
+                for case in cases
+                if case.kind == "dataset" and case.observed_class is not None
+            }
+        ),
+        "training_id": source.provenance["training_id"] if source else None,
+        "data_version": source.provenance["data_version"] if source else None,
+        "word_limit": MAX_RESPONSE_WORDS,
         "review_scale": {
             "0": "Incorrecto o ausente",
             "1": "Parcialmente correcto",
@@ -189,26 +219,46 @@ def run_langflow_evaluation(
     records = []
     review_rows = []
     try:
-        for case_id, view in langflow_cases():
-            expected = _expected(view)
-            before = _fingerprint(asdict(view))
+        for case in cases:
+            observation = case.observation
+            before = _fingerprint(asdict(observation))
             context = None
             response = None
             error = None
-            blocked_locally = False
             started = perf_counter()
             try:
-                context = explanation_context(view)
-                response = active_client.explain(view)
+                context = explanation_context(observation)
+                if case.transport_fault:
+                    failure = (
+                        URLError("simulated connection failure")
+                        if case.transport_fault == "connection_error"
+                        else TimeoutError("simulated timeout")
+                    )
+                    response = LangflowClient(
+                        active_client.config, _FailingOpener(failure)
+                    ).explain(observation)
+                else:
+                    response = active_client.explain(observation)
             except LangflowError as failure:
                 error = str(failure)
-                blocked_locally = view.stale or not view.connected or view.twin is None
             latency = perf_counter() - started
-            after = _fingerprint(asdict(view))
             words = len(response.split()) if response else 0
+            blocked_locally = context is None and error is not None
             record = {
-                "case_id": case_id,
-                "expected": expected,
+                "case_id": case.case_id,
+                "kind": case.kind,
+                "expected": {
+                    "observed_class": case.observed_class,
+                    "published_class": (
+                        observation.state.risk.predicted_class
+                        if observation.state is not None
+                        else None
+                    ),
+                    "node_id": observation.node_id,
+                    "split": observation.split,
+                    "time_step": observation.time_step,
+                    "unavailable_reading_count": observation.unavailable_count,
+                },
                 "context": context,
                 "context_sha256": _fingerprint(context) if context else None,
                 "response": response,
@@ -217,22 +267,23 @@ def run_langflow_evaluation(
                 "blocked_locally": blocked_locally,
                 "latency_seconds": latency,
                 "word_count": words,
-                "within_word_limit": words <= 250 if response else None,
-                "state_unchanged": before == after,
+                "within_word_limit": (
+                    words <= MAX_RESPONSE_WORDS if response else None
+                ),
+                "state_unchanged": before == _fingerprint(asdict(observation)),
             }
             records.append(record)
             review_rows.append(
                 {
-                    "case_id": case_id,
+                    "case_id": case.case_id,
                     "response_received": response is not None,
                     "latency_seconds": latency,
                     "word_count": words,
-                    "within_word_limit": words <= 250 if response else "",
-                    "state_unchanged": before == after,
-                    "factual_accuracy_0_to_2": "",
-                    "component_identification_0_to_2": "",
-                    "uncertainty_handling_0_to_2": "",
-                    "no_unsupported_action_claim_0_to_2": "",
+                    "within_word_limit": (
+                        words <= MAX_RESPONSE_WORDS if response else ""
+                    ),
+                    "state_unchanged": record["state_unchanged"],
+                    **{field: "" for field in SCORE_FIELDS},
                     "reviewer": "",
                     "review_notes": "",
                 }
@@ -240,7 +291,9 @@ def run_langflow_evaluation(
         with (output / "cases.jsonl").open("w", encoding="utf-8") as stream:
             for record in records:
                 stream.write(_json_value(record) + "\n")
-        with (output / "review.csv").open("w", encoding="utf-8", newline="") as stream:
+        with (output / "review.csv").open(
+            "w", encoding="utf-8", newline=""
+        ) as stream:
             writer = csv.DictWriter(stream, fieldnames=REVIEW_FIELDS)
             writer.writeheader()
             writer.writerows(review_rows)
@@ -251,6 +304,7 @@ def run_langflow_evaluation(
             "errors": sum(record["error"] is not None for record in records),
             "locally_blocked": sum(record["blocked_locally"] for record in records),
         }
+        manifest["cases_sha256"] = file_sha256(output / "cases.jsonl")
         manifest_path.write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
         )
@@ -264,6 +318,7 @@ def run_langflow_evaluation(
 
 
 def summarize_langflow_review(output: Path) -> dict:
+    output = Path(output)
     review_path = output / "review.csv"
     manifest_path = output / "manifest.json"
     if not review_path.is_file() or not manifest_path.is_file():
@@ -287,7 +342,7 @@ def summarize_langflow_review(output: Path) -> dict:
                 score = int(row[field])
             except ValueError as error:
                 raise ValueError(
-                    f"El caso {row['case_id']} necesita una puntuación entera en {field}."
+                    f"El caso {row['case_id']} necesita una puntuación en {field}."
                 ) from error
             if score not in (0, 1, 2):
                 raise ValueError(f"La puntuación de {field} debe estar entre 0 y 2.")
@@ -295,6 +350,7 @@ def summarize_langflow_review(output: Path) -> dict:
     summary = {
         "reviewed_responses": len(reviewed),
         "total_cases": len(rows),
+        "review_sha256": file_sha256(review_path),
         "reviewers": sorted({row["reviewer"].strip() for row in reviewed}),
         "mean_scores": {
             field.removesuffix("_0_to_2"): sum(values) / len(values)

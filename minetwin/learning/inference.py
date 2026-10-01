@@ -9,11 +9,11 @@ from minetwin.learning.scaling import FederatedStandardScaler
 from minetwin.publication import PublishedCondition, RiskAssessment
 
 RECOMMENDATIONS = (
-    "Continuar operación y monitoreo programado.",
+    "Sin prioridad adicional según esta estimación histórica.",
     "Aumentar el seguimiento de Component X.",
     "Programar una inspección de Component X.",
     "Priorizar la inspección de Component X.",
-    "Inspeccionar Component X antes de continuar la operación.",
+    "Priorizar una revisión de Component X.",
 )
 
 

@@ -13,10 +13,17 @@ def _cost_sensitive_predictions(probabilities: np.ndarray) -> np.ndarray:
     return np.argmin(probabilities @ costs, axis=1)
 
 
-def classification_metrics(labels: np.ndarray, probabilities: np.ndarray) -> dict:
+def classification_metrics(
+    labels: np.ndarray, probabilities: np.ndarray, decision: str = "cost"
+) -> dict:
     probabilities = _probabilities(probabilities)
     labels = _labels(labels, len(probabilities))
-    predictions = _cost_sensitive_predictions(probabilities)
+    if decision not in ("cost", "argmax"):
+        raise ValueError("La decisión debe ser cost o argmax.")
+    top_class = np.argmax(probabilities, axis=1)
+    predictions = (
+        _cost_sensitive_predictions(probabilities) if decision == "cost" else top_class
+    )
     confusion = np.zeros((5, 5), dtype=np.int64)
     np.add.at(confusion, (labels, predictions), 1)
     true_counts = confusion.sum(axis=1)
@@ -42,6 +49,8 @@ def classification_metrics(labels: np.ndarray, probabilities: np.ndarray) -> dic
     )
     present = true_counts > 0
     cost_matrix = np.asarray(SCANIA_COST_MATRIX, dtype=np.int64)
+    confidence = np.max(probabilities, axis=1)
+    calibration = _calibration_bins(confidence, top_class == labels)
     return {
         "examples": len(labels),
         "total_cost": int(np.sum(confusion * cost_matrix)),
@@ -58,11 +67,57 @@ def classification_metrics(labels: np.ndarray, probabilities: np.ndarray) -> dic
                 ]
             )
         ),
+        "brier_score": float(
+            np.mean(np.sum((probabilities - np.eye(5)[labels]) ** 2, axis=1))
+        ),
+        "log_loss": float(
+            -np.mean(
+                np.log(
+                    np.clip(
+                        probabilities[np.arange(len(labels)), labels], 1e-15, 1
+                    )
+                )
+            )
+        ),
+        "argmax_accuracy": float(np.mean(top_class == labels)),
+        "argmax_ece": float(
+            sum(
+                bin_["examples"] / len(labels)
+                * abs(bin_["mean_confidence"] - bin_["accuracy"])
+                for bin_ in calibration
+            )
+        ),
+        "calibration_bins": calibration,
+        "support": true_counts.tolist(),
+        "predicted_support": predicted_counts.tolist(),
+        "mean_cost_by_class": [
+            float(np.sum(confusion[index] * cost_matrix[index]) / true_counts[index])
+            if true_counts[index]
+            else None
+            for index in range(5)
+        ],
         "precision": precision.tolist(),
         "recall": recall.tolist(),
         "f1": f1.tolist(),
         "confusion_matrix": confusion.tolist(),
     }
+
+
+def _calibration_bins(confidence: np.ndarray, correct: np.ndarray) -> list[dict]:
+    indexes = np.minimum((confidence * 10).astype(int), 9)
+    return [
+        {
+            "lower": index / 10,
+            "upper": (index + 1) / 10,
+            "examples": int(np.sum(selected)),
+            "mean_confidence": (
+                float(np.mean(confidence[selected])) if np.any(selected) else 0.0
+            ),
+            "accuracy": float(np.mean(correct[selected])) if np.any(selected) else 0.0,
+        }
+        for index in range(10)
+        for selected in (indexes == index,)
+    ]
 
 
 def mean_misclassification_cost(
@@ -74,6 +129,23 @@ def mean_misclassification_cost(
     predictions = _cost_sensitive_predictions(probabilities)
     costs = np.asarray(SCANIA_COST_MATRIX, dtype=np.float64)
     return float(np.mean(costs[labels, predictions]))
+
+
+def grouped_classification_metrics(
+    labels: np.ndarray,
+    probabilities: np.ndarray,
+    nodes: np.ndarray,
+    decision: str = "cost",
+) -> dict:
+    return {
+        "global": classification_metrics(labels, probabilities, decision),
+        "nodes": {
+            str(node): classification_metrics(
+                labels[nodes == node], probabilities[nodes == node], decision
+            )
+            for node in np.unique(nodes)
+        },
+    }
 
 
 def _probabilities(values: np.ndarray) -> np.ndarray:

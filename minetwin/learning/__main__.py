@@ -4,6 +4,7 @@ from pathlib import Path
 
 from minetwin.learning.contracts import FeatureConfig, TrainingConfig
 from minetwin.learning.data import prepare_learning_cache
+from minetwin.learning.diagnostics import run_model_diagnostics
 from minetwin.learning.federation import export_federated_inference
 from minetwin.learning.interpretability import (
     PermutationConfig,
@@ -61,6 +62,10 @@ def main() -> None:
     )
     interpret.add_argument("--repeats", type=int, default=3)
     interpret.add_argument("--seed", type=int, default=42)
+    diagnose = commands.add_parser("diagnose")
+    diagnose.add_argument("--cache", type=Path, required=True)
+    diagnose.add_argument("--models", type=Path, required=True)
+    diagnose.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
         if args.command == "prepare":
@@ -96,7 +101,7 @@ def main() -> None:
                 args.split,
                 args.regime,
             )
-        else:
+        elif args.command == "interpret":
             result = run_permutation_importance(
                 args.cache,
                 args.models,
@@ -105,6 +110,8 @@ def main() -> None:
                 args.regime,
                 PermutationConfig(repeats=args.repeats, seed=args.seed),
             )
+        else:
+            result = run_model_diagnostics(args.cache, args.models, args.output)
     except (OSError, ValueError, RuntimeError) as error:
         parser.error(str(error))
     print(json.dumps(result, ensure_ascii=False, indent=2))

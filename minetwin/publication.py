@@ -41,14 +41,23 @@ class PublishedTwinState:
     split: str
     sequence: int
     risk: RiskAssessment
-    schema_version: int = 1
+    quality: float | None
+    training_id: str
+    data_version: str
+    schema_version: int = 2
 
     def __post_init__(self) -> None:
         if not all((self.asset_id, self.node_id, self.component, self.source, self.split)):
             raise ValueError("El estado publicado requiere identidad completa.")
         if type(self.sequence) is not int or self.sequence < 1:
             raise ValueError("sequence debe ser un entero positivo.")
-        if self.schema_version != 1:
+        if self.quality is not None and (
+            not isfinite(self.quality) or not 0 <= self.quality <= 1
+        ):
+            raise ValueError("quality debe estar entre cero y uno.")
+        if not self.training_id or not self.data_version:
+            raise ValueError("El estado requiere versiones de datos y entrenamiento.")
+        if self.schema_version != 2:
             raise ValueError("Version de estado publicado no admitida.")
 
 

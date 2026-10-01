@@ -76,6 +76,11 @@ def main() -> None:
         help="Directorio generado previamente por --prepare-scania.",
     )
     parser.add_argument(
+        "--flow-definition",
+        type=Path,
+        help="Archivo JSON exportado del flujo Langflow utilizado.",
+    )
+    parser.add_argument(
         "--seeds",
         type=_seeds,
         help=(
@@ -115,6 +120,8 @@ def main() -> None:
         parser.error("--prepare-scania-replay requiere --phase1.")
     if args.phase1 is not None and args.prepare_scania_replay is None:
         parser.error("--phase1 solo se utiliza con --prepare-scania-replay.")
+    if args.flow_definition is not None and not args.evaluate_langflow:
+        parser.error("--flow-definition solo se utiliza con --evaluate-langflow.")
     if args.summarize_langflow_review and args.output is None:
         parser.error(
             "--summarize-langflow-review requiere el directorio de evaluación."
@@ -194,7 +201,9 @@ def main() -> None:
             print(json.dumps(result, indent=2))
             return
         if args.evaluate_langflow:
-            records = run_langflow_evaluation(args.output)
+            records = run_langflow_evaluation(
+                args.output, flow_definition=args.flow_definition
+            )
             print(
                 json.dumps(
                     {

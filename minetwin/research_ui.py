@@ -5,6 +5,8 @@ from pathlib import Path
 import plotly.graph_objects as go
 import streamlit as st
 
+from minetwin.paths import RESULTS_ROOT
+
 REGIME_LABELS = {
     "local": "Local",
     "centralized": "Centralizado",
@@ -19,14 +21,25 @@ POLICY_LABELS = {
 }
 
 
-def render_learning_results(root: Path = Path("results")) -> None:
+def render_learning_results(root: Path = RESULTS_ROOT) -> None:
     st.caption("VALIDACIÓN CON DATOS REALES")
     selection = _selection_path(root)
-    final = root / "final_learning"
+    verified_learning = root / "final_learning_verified"
+    verified = (verified_learning / "summary.json").is_file()
+    final = verified_learning if verified else root / "final_learning"
+    diagnostics = root / (
+        "final_diagnostics_verified" if verified else "final_diagnostics"
+    )
+    interpretability = root / (
+        "final_interpretability_verified"
+        if verified
+        else "final_interpretability"
+    )
     tabs = st.tabs(
         (
             "EDA",
             "Entrenamiento",
+            "Diagnóstico predictivo",
             "Selección e hiperparámetros",
             "Validación cruzada",
             "Interpretabilidad",
@@ -43,24 +56,31 @@ def render_learning_results(root: Path = Path("results")) -> None:
         else:
             _render_preliminary_learning(root / "phase2_models" / "metrics.json")
     with tabs[2]:
-        _render_model_selection(selection)
+        _render_diagnostics(diagnostics / "diagnostics.json")
     with tabs[3]:
-        _render_cross_validation(selection)
+        _render_model_selection(selection)
     with tabs[4]:
-        _render_interpretability(root / "final_interpretability")
+        _render_cross_validation(selection)
     with tabs[5]:
-        _render_statistics(final)
+        _render_interpretability(interpretability)
     with tabs[6]:
-        final_federation = root / "final_federation" / "summary.json"
-        _render_sovereignty(
-            final_federation
-            if final_federation.is_file()
-            else root / "phase3_federation" / "summary.json"
-        )
+        _render_statistics(final)
+    with tabs[7]:
+        if verified:
+            federation_path = root / "final_federation_verified" / "summary.json"
+        else:
+            paths = (
+                root / "final_federation" / "summary.json",
+                root / "phase3_federation" / "summary.json",
+            )
+            federation_path = next(
+                (path for path in paths if path.is_file()), paths[-1]
+            )
+        _render_sovereignty(federation_path)
 
 
-def render_workshop_results(root: Path = Path("results")) -> None:
-    st.caption("COORDINACIÓN CON RECURSOS COMPARTIDOS")
+def render_workshop_results(root: Path = RESULTS_ROOT) -> None:
+    st.caption("EXPERIMENTO SIMULADO / COORDINACIÓN CON RECURSOS COMPARTIDOS")
     final = root / "final_workshop"
     if (final / "summary.json").is_file():
         _render_final_workshop(final)
@@ -280,9 +300,10 @@ def _render_final_learning(path: Path) -> None:
     )
     st.dataframe(rows, hide_index=True, width="stretch")
     best = min(rows, key=lambda row: row["Costo"])
-    st.success(
+    st.caption(
         f"Menor costo medio observado: {best['Régimen']} ({best['Costo']:.2f}). "
-        "La significancia se confirma en la pestaña Estadística."
+        "Revisar baselines, errores por clase y pruebas pareadas antes de "
+        "concluir utilidad."
     )
     _interpretation(
         measure="Costo, F1 macro, exactitud balanceada y PR AUC medios.",
@@ -316,6 +337,289 @@ def _learning_chart(rows: list[dict]) -> None:
         showlegend=False,
     )
     _plot(figure)
+
+
+def _render_diagnostics(path: Path) -> None:
+    report = _json(path)
+    st.subheader("Diagnóstico predictivo")
+    if report is None:
+        st.info(
+            "Genera el diagnóstico sobre una semilla entrenada para ver "
+            "baselines, calibración y errores."
+        )
+        return
+    st.caption(
+        f"Validación oficial SCANIA · semilla {report['training_config']['seed']}. "
+        "Diagnóstico descriptivo. "
+        "La selección de hiperparámetros se hizo solo con entrenamiento."
+    )
+    train = report["training_class_counts"]
+    validation = report["validation_class_counts"]
+    st.dataframe(
+        [
+            {
+                "Clase": index,
+                "Entrenamiento": train[index],
+                "Proporción entrenamiento": train[index] / sum(train),
+                "Validación": validation[index],
+                "Proporción validación": validation[index] / sum(validation),
+            }
+            for index in range(5)
+        ],
+        hide_index=True,
+        width="stretch",
+    )
+    _interpretation(
+        measure=(
+            "Frecuencia relativa de cada clase antes y después de la "
+            "separación oficial."
+        ),
+        direction="Las proporciones similares facilitan transportar el modelo.",
+        result=(
+            f"La clase 0 pasa de {train[0] / sum(train):.1%} en entrenamiento "
+            f"a {validation[0] / sum(validation):.1%} en validación."
+        ),
+        conclusion=(
+            "Existe un cambio de distribución que afecta la interpretación "
+            "de las métricas."
+        ),
+        limitation="La diferencia descriptiva no identifica por sí sola su causa.",
+    )
+    baseline_labels = {
+        "always_0": "Siempre clase 0",
+        "always_4": "Siempre clase 4",
+        "train_prior": "Prior de entrenamiento",
+    }
+    baselines = report["baselines"]
+    st.dataframe(
+        [
+            {
+                "Baseline": baseline_labels[key],
+                "Costo medio": item["global"]["mean_cost"],
+                "F1 macro": item["global"]["macro_f1"],
+                "Exactitud balanceada": item["global"]["balanced_accuracy"],
+                "PR AUC macro": item["global"]["macro_pr_auc"],
+            }
+            for key, item in baselines.items()
+        ],
+        hide_index=True,
+        width="stretch",
+    )
+    best_baseline = min(
+        baselines, key=lambda key: baselines[key]["global"]["mean_cost"]
+    )
+    _interpretation(
+        measure="Costo y clasificación de tres reglas sin entrenamiento de red.",
+        direction=(
+            "Costo menor y F1 macro mayor indican mejora frente a reglas triviales."
+        ),
+        result=(
+            f"{baseline_labels[best_baseline]} logra el menor costo basal: "
+            f"{baselines[best_baseline]['global']['mean_cost']:.3f} por ejemplo."
+        ),
+        conclusion=(
+            "El modelo debe compararse con esta referencia antes de reclamar utilidad."
+        ),
+        limitation=(
+            "Los baselines se definieron sin elegir una regla sobre la validación."
+        ),
+    )
+    regime = st.selectbox(
+        "Régimen para examinar",
+        tuple(report["results"]),
+        format_func=lambda value: REGIME_LABELS.get(value, value),
+        key="diagnostic_regime",
+    )
+    selected = report["results"][regime]
+    global_metrics = selected["global"]
+    st.dataframe(
+        [
+            {
+                "Costo medio": global_metrics["mean_cost"],
+                "F1 macro": global_metrics["macro_f1"],
+                "Exactitud balanceada": global_metrics["balanced_accuracy"],
+                "PR AUC macro": global_metrics["macro_pr_auc"],
+                "Brier multiclase": global_metrics["brier_score"],
+                "ECE top-1": global_metrics["argmax_ece"],
+            }
+        ],
+        hide_index=True,
+        width="stretch",
+    )
+    argmax = report["argmax_results"][regime]
+    st.dataframe(
+        [
+            {
+                "Decisión": name,
+                "Costo medio": metrics["mean_cost"],
+                "F1 macro": metrics["macro_f1"],
+                "Exactitud balanceada": metrics["balanced_accuracy"],
+            }
+            for name, metrics in (
+                ("Matriz de costo", global_metrics),
+                ("Mayor probabilidad", argmax),
+            )
+        ],
+        hide_index=True,
+        width="stretch",
+    )
+    _interpretation(
+        measure="Dos reglas de decisión aplicadas a las mismas probabilidades.",
+        direction="Menor costo y mayor equilibrio entre clases son favorables.",
+        result=(
+            f"Costo medio: matriz {global_metrics['mean_cost']:.3f}; "
+            f"máxima probabilidad {argmax['mean_cost']:.3f}."
+        ),
+        conclusion=(
+            "La matriz penaliza más los errores sobre clases próximas a reparación."
+        ),
+        limitation=(
+            "Esta comparación es descriptiva; no selecciona una regla con "
+            "validación oficial."
+        ),
+    )
+    baseline_cost = baselines[best_baseline]["global"]["mean_cost"]
+    baseline_f1 = max(item["global"]["macro_f1"] for item in baselines.values())
+    if (
+        global_metrics["mean_cost"] >= baseline_cost
+        or global_metrics["macro_f1"] <= baseline_f1
+    ):
+        st.warning(
+            "Este resultado no supera simultáneamente el costo del mejor baseline "
+            "y el F1 macro basal. No demuestra calidad práctica para mantenimiento."
+        )
+    else:
+        st.info(
+            "Supera las referencias triviales en esta semilla; falta validar "
+            "estabilidad estadística y utilidad en una operación minera."
+        )
+    _interpretation(
+        measure=(
+            "Costo de errores, calidad por clase, precisión-recall y calibración "
+            "de las probabilidades sin recalibración posterior."
+        ),
+        direction="Menor costo, Brier y ECE; mayor F1, exactitud balanceada y PR AUC.",
+        result=(
+            f"{REGIME_LABELS[regime]}: costo {global_metrics['mean_cost']:.3f}, "
+            f"F1 {global_metrics['macro_f1']:.3f}, "
+            f"Brier {global_metrics['brier_score']:.3f}, "
+            f"ECE {global_metrics['argmax_ece']:.3f}."
+        ),
+        conclusion=(
+            "Una probabilidad confiable requiere Brier y ECE bajos además de "
+            "buena clasificación."
+        ),
+        limitation=(
+            "ECE agrupa la confianza de la clase más probable en diez intervalos; "
+            "no mide la calibración de la decisión por costo. Esta semilla no "
+            "permite inferencia."
+        ),
+    )
+    st.dataframe(
+        [
+            {
+                "Confianza": f"{item['lower']:.0%}–{item['upper']:.0%}",
+                "Ejemplos": item["examples"],
+                "Confianza media": item["mean_confidence"],
+                "Exactitud top-1": item["accuracy"],
+            }
+            for item in global_metrics["calibration_bins"]
+            if item["examples"]
+        ],
+        hide_index=True,
+        width="stretch",
+    )
+    _interpretation(
+        measure="Exactitud observada frente a confianza media por intervalo.",
+        direction="Ambas cifras deben ser cercanas en cada intervalo.",
+        result=f"ECE top-1: {global_metrics['argmax_ece']:.3f}.",
+        conclusion=(
+            "Los intervalos muestran dónde se concentra el error de calibración."
+        ),
+        limitation=(
+            "La exactitud top-1 difiere de la clase elegida por la matriz de costo."
+        ),
+    )
+    _render_diagnostic_confusion(global_metrics)
+    st.dataframe(
+        [
+            {
+                "Nodo experimental": node,
+                "Ejemplos": values["examples"],
+                "Costo medio": values["mean_cost"],
+                "F1 macro": values["macro_f1"],
+                "Exactitud balanceada": values["balanced_accuracy"],
+                "PR AUC macro": values["macro_pr_auc"],
+            }
+            for node, values in selected["nodes"].items()
+        ],
+        hide_index=True,
+        width="stretch",
+    )
+    _interpretation(
+        measure="Rendimiento de la misma semilla por nodo experimental.",
+        direction="Costo bajo y métricas altas en todos los nodos.",
+        result=(
+            f"Se evaluaron {len(selected['nodes'])} particiones sobre sus "
+            "ejemplos oficiales."
+        ),
+        conclusion=(
+            "Las diferencias entre nodos señalan heterogeneidad que el promedio "
+            "global oculta."
+        ),
+        limitation=(
+            "Las particiones no representan contratistas reales; clases ausentes "
+            "reducen el F1 computable."
+        ),
+    )
+
+
+def _render_diagnostic_confusion(metrics: dict) -> None:
+    labels = [f"Clase {index}" for index in range(5)]
+    figure = go.Figure(
+        go.Heatmap(
+            z=metrics["confusion_matrix"],
+            x=labels,
+            y=labels,
+            colorscale="YlOrBr",
+            hovertemplate=(
+                "Real: %{y}<br>Predicha: %{x}<br>Ejemplos: %{z}<extra></extra>"
+            ),
+        )
+    )
+    figure.update_layout(height=360, xaxis_title="Predicha", yaxis_title="Real")
+    _plot(figure)
+    st.dataframe(
+        [
+            {
+                "Clase real": index,
+                "Ejemplos": metrics["support"][index],
+                "Predicciones": metrics["predicted_support"][index],
+                "Precisión": metrics["precision"][index],
+                "Recall": metrics["recall"][index],
+                "F1": metrics["f1"][index],
+                "Costo medio de la clase": metrics["mean_cost_by_class"][index],
+            }
+            for index in range(5)
+        ],
+        hide_index=True,
+        width="stretch",
+    )
+    _interpretation(
+        measure=(
+            "Errores entre clase real y predicha, y costo medio dentro de cada clase."
+        ),
+        direction="Más ejemplos en la diagonal y menor costo por clase son favorables.",
+        result=(
+            f"La clase 0 tiene recall {metrics['recall'][0]:.1%}; "
+            f"la clase 4 tiene recall {metrics['recall'][4]:.1%}."
+        ),
+        conclusion=(
+            "La matriz permite ver falsas alarmas y fallas de detección que "
+            "ocultan los promedios."
+        ),
+        limitation="Las clases escasas producen estimaciones más inciertas.",
+    )
 
 
 def _render_training_history(report: dict | None) -> None:
@@ -678,11 +982,32 @@ def _render_sovereignty(path: Path) -> None:
         st.info("Ejecuta la inferencia federada para mostrar la trazabilidad.")
         return
     transfer = data["transfer"]
+    provenance = data.get("provenance", {})
+    if provenance.get("verified"):
+        st.caption(
+            f"Datos {provenance['data_version'][:12]} · "
+            f"entrenamiento {provenance['training_id'][:12]} · "
+            "coincidencia de caché y modelos verificada"
+        )
+    else:
+        st.warning(
+            "El artefacto anterior no prueba la correspondencia entre caché, "
+            "configuración y modelos. Regenera aprendizaje y publicación."
+        )
+    st.caption(
+        "Nodos: particiones lógicas de un mismo dataset público. "
+        "No representa un despliegue entre contratistas."
+    )
+    if data.get("centralized_training_uses_raw_data"):
+        st.warning(
+            "El régimen centralizado usa datos de entrenamiento reunidos; "
+            "la afirmación de retención local no aplica a ese comparador."
+        )
     columns = st.columns(4)
     columns[0].metric("Estados publicados", f"{data['coordinator_states']:,}")
-    columns[1].metric("Variables crudas centrales", data["coordinator_raw_features"])
-    columns[2].metric("Registros crudos transferidos", transfer["raw_records"])
-    columns[3].metric("Datos transferidos", _bytes(transfer["payload_bytes"]))
+    columns[1].metric("Variables crudas publicadas", data["coordinator_raw_features"])
+    columns[2].metric("Registros crudos publicados", transfer["raw_records"])
+    columns[3].metric("Volumen registrado", _bytes(transfer["payload_bytes"]))
     reduction = data.get("publication_reduction_ratio")
     if reduction is not None:
         st.metric(
@@ -694,30 +1019,39 @@ def _render_sovereignty(path: Path) -> None:
     if parameters.get("messages"):
         st.caption(
             f"{parameters['messages']} actualizaciones de parámetros · "
-            f"{_bytes(parameters['payload_bytes'])} enviados por los nodos"
+            f"{_bytes(parameters['payload_bytes'])} estimados para los nodos"
         )
     st.caption(
-        "Los nodos retienen las ventanas operativas. El coordinador recibe estados "
-        "de riesgo y parámetros del modelo registrados en el ledger."
+        "El coordinador de estados recibe riesgos y metadatos permitidos. "
+        "Los bytes de estados se miden al serializar; los de parámetros se "
+        "estiman a partir del tamaño del modelo."
     )
     rows = [
         {
             "Nodo": node,
             "Registros privados": values["private_records"],
             "Estados publicados": values["published_states"],
+            "Cobertura de lecturas": values.get("mean_observation_quality"),
         }
         for node, values in data["nodes"].items()
     ]
     st.dataframe(rows, hide_index=True, width="stretch")
     _interpretation(
-        measure="Registros retenidos localmente y estados de riesgo publicados.",
-        direction="El coordinador debe recibir cero registros y variables crudas.",
+        measure=(
+            "Registros asignados, estados publicados y cobertura de lecturas "
+            "por partición."
+        ),
+        direction="El estado publicado debe excluir registros y variables crudas.",
         result=(
             f"{sum(row['Registros privados'] for row in rows):,} registros privados; "
             f"{transfer['raw_records']} registros crudos transferidos."
         ),
-        conclusion="El artefacto conserva los datos operativos en los nodos.",
-        limitation="La soberanía se demuestra en una federación experimental local.",
+        conclusion="Los estados publicados no contienen lecturas ni ventanas crudas.",
+        limitation=(
+            "La retención se evalúa en particiones lógicas de un solo proceso; "
+            "no demuestra soberanía entre organizaciones independientes. La "
+            "cobertura de lecturas no mide precisión predictiva."
+        ),
     )
 
 

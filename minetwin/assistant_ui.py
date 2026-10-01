@@ -1,52 +1,64 @@
 import streamlit as st
 
-from minetwin.federation import FederatedFleet
-from minetwin.langflow_client import LangflowClient, LangflowConfig, LangflowError
+from minetwin.data.scania import ScaniaReplayView
+from minetwin.langflow_client import (
+    LangflowClient,
+    LangflowConfig,
+    LangflowError,
+    explanation_context,
+)
+from minetwin.scania_explanation import ScaniaExplanationSource
 
 
-def render_assistant(fleet: FederatedFleet, truck_id: str) -> None:
-    with st.expander(
-        "Asistente de explicación · Langflow", icon=":material/psychology:"
-    ):
+@st.cache_resource
+def _source() -> ScaniaExplanationSource:
+    return ScaniaExplanationSource()
+
+
+def render_assistant(view: ScaniaReplayView, regime: str) -> None:
+    st.subheader("Asistente de Component X · Langflow")
+    st.caption(
+        "Explica un estado publicado de SCANIA. No modifica la clase, el modelo "
+        "ni ejecuta mantenimiento."
+    )
+    try:
+        observation = _source().observation(view, regime)
+        context = explanation_context(observation)
+    except (OSError, ValueError, LangflowError) as error:
+        st.warning(str(error))
+        return
+    try:
+        config = LangflowConfig.from_environment()
+    except ValueError as error:
+        st.warning(str(error))
+        return
+    if config is None:
+        st.info("Configura la conexión de Langflow para solicitar explicaciones.")
+        return
+    state = observation.state
+    context_key = (
+        view.vehicle_id,
+        view.split.value,
+        view.current.time_step,
+        regime,
+        state.risk.model_id,
+        state.training_id,
+        state.data_version,
+    )
+    st.caption(
+        f"Vehículo {view.vehicle_id} · partición {view.node_id} · "
+        f"paso {view.current.time_step:g} · clase {state.risk.predicted_class} · "
+        f"calidad {state.quality:.1%}"
+    )
+    with st.expander("Evidencia enviada al flujo", expanded=False):
+        st.json(context)
+    if st.button("Explicar observación", key="scania_explain"):
         try:
-            config = LangflowConfig.from_environment()
-        except ValueError:
-            st.caption("La conexión de Langflow necesita una configuración válida.")
-            return
-        if config is None:
-            st.caption(
-                "Conexión pendiente. Las variables necesarias están indicadas en el plan del proyecto."
-            )
-            return
-        view = fleet.view(truck_id)
-        context_key = (
-            truck_id,
-            view.twin.version if view.twin else None,
-            view.asset_status,
-            view.orders,
-        )
-        st.caption(
-            "Envía la observación normalizada y sus diagnósticos al flujo configurado. La respuesta es orientativa y no ejecuta mantenimiento."
-        )
-        if st.button(
-            "Explicar condición actual",
-            key="explain_condition",
-            disabled=view.stale or view.twin is None or fleet.running,
-        ):
-            try:
-                with st.spinner("Preparando explicación…"):
-                    response = LangflowClient(config).explain(view)
-                st.session_state.assistant_response = (context_key, response)
-            except LangflowError as error:
-                st.error(str(error))
-        if fleet.running:
-            st.caption("Pausa la simulación para analizar una observación concreta.")
-        saved = st.session_state.get("assistant_response")
-        if (
-            saved
-            and view.twin
-            and saved[0] == context_key
-            and not view.stale
-            and not fleet.running
-        ):
-            st.text(saved[1])
+            with st.spinner("Consultando Langflow…"):
+                response = LangflowClient(config).explain(observation)
+            st.session_state.scania_assistant_response = (context_key, response)
+        except LangflowError as error:
+            st.error(str(error))
+    saved = st.session_state.get("scania_assistant_response")
+    if saved and saved[0] == context_key:
+        st.write(saved[1])

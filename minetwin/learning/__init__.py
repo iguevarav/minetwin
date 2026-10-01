@@ -1,5 +1,6 @@
 from minetwin.learning.contracts import FeatureConfig, TrainingConfig
 from minetwin.learning.data import CachedSplit, WindowVectorizer, prepare_learning_cache
+from minetwin.learning.diagnostics import run_model_diagnostics
 from minetwin.learning.federation import (
     ScaniaFederatedInference,
     export_federated_inference,
@@ -43,6 +44,7 @@ __all__ = [
     "load_selected_training",
     "mean_misclassification_cost",
     "prepare_learning_cache",
+    "run_model_diagnostics",
     "run_model_selection",
     "run_permutation_importance",
 ]

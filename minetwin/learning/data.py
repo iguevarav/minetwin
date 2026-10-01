@@ -16,6 +16,7 @@ from minetwin.data.scania import (
     build_windows,
 )
 from minetwin.learning.contracts import FeatureConfig
+from minetwin.learning.provenance import file_sha256
 
 
 @dataclass(frozen=True)
@@ -137,8 +138,12 @@ def prepare_learning_cache(
             )
         metadata = {
             "feature_config": asdict(effective),
+            "partition_config": asdict(partitioner),
             "source_manifest": str(
                 (phase_one_output / "dataset_manifest.json").resolve()
+            ),
+            "source_manifest_sha256": file_sha256(
+                phase_one_output / "dataset_manifest.json"
             ),
             "feature_count": len(vectorizer.feature_names(dataset.schema.feature_names)),
             "sampling": "last_causal_window_per_observed_class_and_vehicle",

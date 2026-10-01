@@ -1,10 +1,16 @@
 import json
+from dataclasses import replace
 
 import numpy as np
+import pytest
 
 from minetwin.learning.data import CachedSplit
 from minetwin.learning.federation import ScaniaFederatedInference
 from minetwin.learning.inference import risk_assessment
+from minetwin.learning.provenance import (
+    training_provenance,
+    verify_training_provenance,
+)
 from minetwin.publication import PublishedCondition
 from minetwin.transfer import MessageType, TransferDirection, TransferLedger
 
@@ -38,6 +44,7 @@ def test_nodes_publish_only_risk_state_and_keep_features_private():
     assert len(federation.states) == 3
     assert federation.state("A-1").risk.condition == PublishedCondition.NORMAL
     assert federation.state("B-1").risk.condition == PublishedCondition.ALERT
+    assert federation.state("A-1").quality is None
     assert not hasattr(federation.coordinator, "features")
     assert not hasattr(federation.state("A-1"), "features")
     assert all(record.raw_records == 0 for record in federation.ledger.records)
@@ -45,6 +52,76 @@ def test_nodes_publish_only_risk_state_and_keep_features_private():
         record.message_type == MessageType.PUBLISHED_STATE
         for record in federation.ledger.records
     )
+
+
+def test_published_quality_uses_only_the_window_missingness_summary():
+    cached = CachedSplit(
+        features=np.asarray(((0, 2, 0.25),), dtype=np.float32),
+        labels=np.asarray((0,), dtype=np.int8),
+        nodes=np.asarray(("alpha",)),
+        vehicle_ids=np.asarray(("A-1",)),
+        feature_names=("a__last", "b__last", "a__missing_rate"),
+    )
+    federation = ScaniaFederatedInference(
+        cached, "validation", {"alpha": FakePrognosticator()}, "local"
+    )
+    federation.publish()
+    state = federation.state("A-1")
+    assert state.quality == pytest.approx(0.75)
+    assert not hasattr(state, "features")
+
+
+def test_coordinator_rejects_incompatible_model_and_data_versions():
+    predictors = {"alpha": FakePrognosticator(), "beta": FakePrognosticator()}
+    federation = ScaniaFederatedInference(
+        cached_split(), "validation", predictors, "fedprox"
+    )
+    federation.publish()
+    state = federation.state("A-1")
+    with pytest.raises(ValueError, match="no coincide"):
+        federation.coordinator.receive(replace(state, data_version="other"))
+    with pytest.raises(ValueError, match="no coincide"):
+        federation.coordinator.receive(
+            replace(state, risk=replace(state.risk, model_id="other"))
+        )
+    with pytest.raises(ValueError, match="no coincide"):
+        federation.coordinator.receive(replace(state, asset_id="unknown"))
+    federation.coordinator.receive(state)
+    assert len(federation.ledger.records) == 3
+
+
+def test_training_provenance_detects_cache_or_model_changes(tmp_path):
+    cache = tmp_path / "cache"
+    models = tmp_path / "models"
+    cache.mkdir()
+    models.mkdir()
+    for name in ("train.npz", "validation.npz", "metadata.json"):
+        (cache / name).write_bytes(name.encode())
+    (models / "scaler.npz").write_bytes(b"scaler")
+    (models / "fedprox.pt").write_bytes(b"model")
+    report = {
+        "config": {"seed": 100},
+        "torch": "2.14.0",
+        "provenance": training_provenance(cache, models, {"seed": 100}, "2.14.0"),
+    }
+    assert verify_training_provenance(cache, models, report) == report["provenance"]
+    (models / "fedprox.pt").write_bytes(b"changed")
+    with pytest.raises(ValueError, match="no coinciden"):
+        verify_training_provenance(cache, models, report)
+    (models / "fedprox.pt").write_bytes(b"model")
+    (cache / "train.npz").write_bytes(b"changed")
+    with pytest.raises(ValueError, match="no coinciden"):
+        verify_training_provenance(cache, models, report)
+
+
+def test_legacy_models_cannot_be_published_without_provenance(tmp_path):
+    models = tmp_path / "models"
+    models.mkdir()
+    (models / "metrics.json").write_text(
+        json.dumps({"config": {}, "torch": "2.14.0"}), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="procedencia verificable"):
+        ScaniaFederatedInference.from_artifacts(tmp_path, models)
 
 
 def test_risk_assessment_normalizes_probabilities_and_limits_the_recommendation():

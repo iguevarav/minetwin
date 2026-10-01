@@ -10,8 +10,9 @@ import numpy as np
 
 from minetwin.learning.contracts import TrainingConfig
 from minetwin.learning.data import CachedSplit
-from minetwin.learning.metrics import classification_metrics
+from minetwin.learning.metrics import grouped_classification_metrics
 from minetwin.learning.model import build_risk_mlp, require_torch
+from minetwin.learning.provenance import training_provenance
 from minetwin.learning.scaling import FederatedStandardScaler
 
 
@@ -87,7 +88,7 @@ def train_learning_regimes(
             local_probabilities[selected] = _predict(
                 model, validation_features[selected], effective.batch_size, torch
             )
-        results["local"] = _grouped_metrics(
+        results["local"] = grouped_classification_metrics(
             validation.labels, local_probabilities, validation.nodes
         )
         centralized = _new_model(architecture, effective.seed, torch)
@@ -141,6 +142,9 @@ def train_learning_regimes(
             "training_history": training_history,
             "results": results,
         }
+        report["provenance"] = training_provenance(
+            cache, output, report["config"], report["torch"]
+        )
         (output / "metrics.json").write_text(
             json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
         )
@@ -264,19 +268,7 @@ def _predict(model, features, batch_size, torch):
 
 def _evaluate(model, features, labels, nodes, batch_size, torch):
     probabilities = _predict(model, features, batch_size, torch)
-    return _grouped_metrics(labels, probabilities, nodes)
-
-
-def _grouped_metrics(labels, probabilities, nodes):
-    return {
-        "global": classification_metrics(labels, probabilities),
-        "nodes": {
-            str(node): classification_metrics(
-                labels[nodes == node], probabilities[nodes == node]
-            )
-            for node in np.unique(nodes)
-        },
-    }
+    return grouped_classification_metrics(labels, probabilities, nodes)
 
 
 def _class_weights(labels, torch):

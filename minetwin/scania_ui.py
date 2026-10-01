@@ -4,7 +4,9 @@ from pathlib import Path
 import plotly.graph_objects as go
 import streamlit as st
 
+from minetwin.assistant_ui import render_assistant
 from minetwin.data.scania import (
+    SCANIA_CLASS_DESCRIPTIONS,
     DatasetSplit,
     ScaniaReplaySession,
     ScaniaReplayStore,
@@ -12,27 +14,27 @@ from minetwin.data.scania import (
 )
 from minetwin.learning import FeatureConfig, WindowVectorizer
 from minetwin.learning.inference import TorchRiskPrognosticator
+from minetwin.paths import DATASET_ROOT, RESULTS_ROOT, result_path
 from minetwin.publication import PublishedCondition, RiskAssessment
 from minetwin.research_ui import render_learning_results
 
-PROJECT_ROOT = Path(__file__).parents[1]
-RESULTS_ROOT = PROJECT_ROOT / "results"
-DATASET_ROOT = Path(__file__).parent / "data" / "scania"
-REPLAY_INDEX = RESULTS_ROOT / "phase1_replay" / "index.json"
-PHASE_ONE_SUMMARY = RESULTS_ROOT / "phase1_scania" / "summary.json"
-LEARNING_METADATA = RESULTS_ROOT / "phase2_cache" / "metadata.json"
+REPLAY_INDEX = result_path("phase1_replay", "index.json")
+PHASE_ONE_SUMMARY = result_path("phase1_scania", "summary.json")
+LEARNING_METADATA = result_path("phase2_cache", "metadata.json")
 EDA_PATHS = (
-    RESULTS_ROOT / "final_selection" / "eda.json",
-    RESULTS_ROOT / "model_selection" / "eda.json",
+    result_path("final_selection", "eda.json"),
+    result_path("model_selection", "eda.json"),
 )
 FEDERATION_PATHS = (
-    RESULTS_ROOT / "final_federation" / "summary.json",
-    RESULTS_ROOT / "final_federation_preselection" / "summary.json",
-    RESULTS_ROOT / "phase3_federation" / "summary.json",
+    result_path("final_federation_verified", "summary.json"),
+    result_path("final_federation", "summary.json"),
+    result_path("final_federation_preselection", "summary.json"),
+    result_path("phase3_federation", "summary.json"),
 )
 MODEL_ROOTS = (
-    RESULTS_ROOT / "final_learning" / "seed_100",
-    RESULTS_ROOT / "phase2_models",
+    result_path("final_learning_verified", "seed_100"),
+    result_path("final_learning", "seed_100"),
+    result_path("phase2_models"),
 )
 VIEWS = (
     "Dashboard",
@@ -41,6 +43,7 @@ VIEWS = (
     "Riesgo predictivo",
     "Aprendizaje",
     "Federación",
+    "Asistente",
 )
 REGIMES = {
     "fedprox": "FedProx",
@@ -48,17 +51,11 @@ REGIMES = {
     "centralized": "Centralizado",
     "local": "Local",
 }
-CLASS_LABELS = {
-    0: "Más de 48 pasos o sin reparación",
-    1: "Entre 24 y 48 pasos",
-    2: "Entre 12 y 24 pasos",
-    3: "Entre 6 y 12 pasos",
-    4: "Hasta 6 pasos",
-}
+CLASS_LABELS = dict(enumerate(SCANIA_CLASS_DESCRIPTIONS))
 CONDITION_LABELS = {
-    PublishedCondition.NORMAL: "Operación normal",
-    PublishedCondition.WATCH: "Seguimiento requerido",
-    PublishedCondition.ALERT: "Condición crítica",
+    PublishedCondition.NORMAL: "Riesgo estimado bajo",
+    PublishedCondition.WATCH: "Seguimiento sugerido",
+    PublishedCondition.ALERT: "Riesgo estimado alto",
 }
 
 
@@ -74,14 +71,14 @@ def _predictor(model: str, scaler: str) -> TorchRiskPrognosticator:
 
 def render_scania() -> None:
     st.html('<div class="mt-eyebrow">DATOS REALES / SCANIA COMPONENT X</div>')
-    st.title("MineTwin · Reproducción de datos reales")
+    st.title("MineTwin · Análisis histórico de Component X")
     if not REPLAY_INDEX.is_file():
         _render_pending_index()
         return
     store = _store(str(DATASET_ROOT), str(REPLAY_INDEX))
     view_name, split, node_id, vehicle_id, regime = _sidebar(store)
     st.caption(
-        f"{view_name} · Split {split.value} · Nodo {node_id} · "
+        f"{view_name} · Split {split.value} · Partición {node_id} · "
         "Fuente SCANIA Component X"
     )
     if view_name == "Dashboard":
@@ -98,6 +95,14 @@ def render_scania() -> None:
         _render_risk(session.view, regime)
     elif view_name == "Aprendizaje":
         render_learning_results(RESULTS_ROOT)
+    elif view_name == "Asistente":
+        session = _session(store, split, vehicle_id)
+        _render_replay_controls(session)
+        if session.position < session.readout_count - 1 and st.button(
+            "Ir al último readout", key="scania_latest_readout"
+        ):
+            session.advance(session.readout_count)
+        render_assistant(session.view, regime)
     else:
         _render_federation(split)
 
@@ -122,7 +127,9 @@ def _sidebar(
             format_func=lambda item: item.value.capitalize(),
             key="scania_split",
         )
-        node_id = st.selectbox("Nodo", store.nodes(split), key="scania_node")
+        node_id = st.selectbox(
+            "Partición experimental", store.nodes(split), key="scania_node"
+        )
         vehicles = store.vehicles(split, node_id)
         vehicle_id = st.selectbox(
             "Vehículo",
@@ -135,7 +142,10 @@ def _sidebar(
             format_func=REGIMES.get,
             key="scania_regime",
         )
-        st.caption("Datos observados · Variables físicas anónimas")
+        st.caption(
+            "Lecturas históricas · Variables anónimas · "
+            "Particiones derivadas de especificaciones"
+        )
     return view_name, split, node_id, vehicle_id, regime
 
 
@@ -144,9 +154,17 @@ def _session(
     split: DatasetSplit,
     vehicle_id: str,
 ) -> ScaniaReplaySession:
+    metadata = _read_json(LEARNING_METADATA)
+    window_size = metadata["feature_config"]["window_size"] if metadata else 12
     session = st.session_state.get("scania_replay")
-    if not isinstance(session, ScaniaReplaySession) or session.store is not store:
-        session = ScaniaReplaySession(store, split, vehicle_id=vehicle_id)
+    if (
+        not isinstance(session, ScaniaReplaySession)
+        or session.store is not store
+        or session.window_size != window_size
+    ):
+        session = ScaniaReplaySession(
+            store, split, vehicle_id=vehicle_id, window_size=window_size
+        )
         st.session_state.scania_replay = session
     elif (session.split, session.vehicle_id) != (split, vehicle_id):
         session.select(split, vehicle_id)
@@ -174,7 +192,7 @@ def _render_dashboard(
     columns[1].metric("Readouts", f"{split_summary['readouts']:,}")
     columns[2].metric("Variables", split_summary["features"])
     columns[3].metric("Valores ausentes", f"{missing_rate:.2%}")
-    columns[4].metric("Nodos", len(store.nodes(split)))
+    columns[4].metric("Particiones", len(store.nodes(split)))
     _evidence(
         split,
         len(vehicles),
@@ -183,16 +201,16 @@ def _render_dashboard(
     )
     left, right = st.columns(2, gap="large")
     with left:
-        st.subheader("Vehículos por nodo")
+        st.subheader("Vehículos por partición")
         node_counts = {
             node: len(store.vehicles(split, node)) for node in store.nodes(split)
         }
-        _bar_chart(node_counts, "Nodo", "Vehículos")
+        _bar_chart(node_counts, "Partición", "Vehículos")
         _evidence(
             split,
             len(vehicles),
             "derivado",
-            "Cada vehículo permanece asignado a un único nodo.",
+            "Cada vehículo permanece asignado a una única partición experimental.",
         )
     with right:
         st.subheader("Clases disponibles")
@@ -256,16 +274,16 @@ def _render_eda(store: ScaniaReplayStore, split: DatasetSplit) -> None:
         st.info("No existen etiquetas públicas para este split.")
     left, right = st.columns(2, gap="large")
     with left:
-        st.subheader("Vehículos por nodo")
+        st.subheader("Vehículos por partición")
         nodes = {
             node: len(store.vehicles(split, node)) for node in store.nodes(split)
         }
-        _bar_chart(nodes, "Nodo", "Vehículos")
+        _bar_chart(nodes, "Partición", "Vehículos")
         _evidence(
             split,
             sum(nodes.values()),
             "derivado",
-            "La diferencia de tamaños representa heterogeneidad entre nodos.",
+            "La diferencia de tamaños representa heterogeneidad entre particiones.",
         )
     with right:
         st.subheader("Ausencia por split")
@@ -348,7 +366,7 @@ def _render_telemetry(view: ScaniaReplayView) -> None:
     missing = sum(value is None for value in view.current.values)
     columns = st.columns(5)
     columns[0].metric("Vehículo", view.vehicle_id)
-    columns[1].metric("Nodo", view.node_id)
+    columns[1].metric("Partición", view.node_id)
     columns[2].metric("Readout", f"{view.position + 1}/{view.readout_count}")
     columns[3].metric("Paso temporal", f"{view.current.time_step:g}")
     columns[4].metric("Ausentes", f"{missing}/{len(view.current.values)}")
@@ -465,14 +483,14 @@ def _render_risk(view: ScaniaReplayView, regime: str) -> None:
     )
     evidence = [
         {"Evidencia": "Vehículo", "Valor": view.vehicle_id},
-        {"Evidencia": "Nodo", "Valor": view.node_id},
+        {"Evidencia": "Partición", "Valor": view.node_id},
         {"Evidencia": "Último paso observado", "Valor": view.current.time_step},
         {"Evidencia": "Variables derivadas", "Valor": feature_count},
         {"Evidencia": "Régimen", "Valor": REGIMES[regime]},
         {"Evidencia": "Modelo", "Valor": assessment.model_id},
         {"Evidencia": "Artefacto", "Valor": model_root.name},
         {
-            "Evidencia": "Etiqueta de referencia",
+            "Evidencia": "Etiqueta retrospectiva",
             "Valor": _class_label(view.observed_class),
         },
     ]
@@ -516,22 +534,48 @@ def _risk_status(assessment: RiskAssessment) -> None:
 
 
 def _render_federation(active_split: DatasetSplit) -> None:
-    data = _first_json(FEDERATION_PATHS)
+    paths = (
+        FEDERATION_PATHS[:1]
+        if (MODEL_ROOTS[0] / "scaler.npz").is_file()
+        else FEDERATION_PATHS
+    )
+    data = _first_json(paths)
     if data is None:
         st.warning("No existe una publicación federada para mostrar.")
         return
     split = DatasetSplit(data["split"])
     transfer = data["transfer"]
+    provenance = data.get("provenance", {})
+    if provenance.get("verified"):
+        st.caption(
+            f"Caché y modelos verificados · datos {provenance['data_version'][:12]} · "
+            f"entrenamiento {provenance['training_id'][:12]}"
+        )
+    else:
+        st.warning(
+            "Esta publicación no contiene una huella verificable de caché y modelos."
+        )
+    st.caption(
+        "Los nodos son particiones experimentales de una sola fuente pública. "
+        "No se midió un despliegue entre contratistas."
+    )
+    if data.get("centralized_training_uses_raw_data"):
+        st.warning(
+            "El comparador centralizado reúne los datos de entrenamiento; "
+            "la retención local no aplica a ese régimen."
+        )
     columns = st.columns(5)
     columns[0].metric("Estados publicados", f"{data['coordinator_states']:,}")
-    columns[1].metric("Variables crudas centrales", data["coordinator_raw_features"])
-    columns[2].metric("Registros crudos recibidos", transfer["raw_records"])
+    columns[1].metric("Variables crudas publicadas", data["coordinator_raw_features"])
+    columns[2].metric("Registros crudos publicados", transfer["raw_records"])
     columns[3].metric("Mensajes", f"{transfer['messages']:,}")
-    columns[4].metric("Transferencia", _bytes(transfer["payload_bytes"]))
+    columns[4].metric(
+        "Mensajes medidos y estimados", _bytes(transfer["payload_bytes"])
+    )
     _evidence(
         split,
         data["coordinator_states"],
-        "derivado",
+        "partición experimental",
         f"Publicación federada con {REGIMES.get(data['regime'], data['regime'])}.",
     )
     if active_split != split:
@@ -541,21 +585,24 @@ def _render_federation(active_split: DatasetSplit) -> None:
         )
     left, right = st.columns(2, gap="large")
     with left:
-        st.subheader("Retención por nodo")
+        st.subheader("Retención por partición")
         rows = [
             {
-                "Nodo": node,
-                "Registros privados": values["private_records"],
+                "Partición": node,
+                "Registros asignados": values["private_records"],
                 "Estados publicados": values["published_states"],
+                "Cobertura de lecturas": values.get("mean_observation_quality"),
             }
             for node, values in data["nodes"].items()
         ]
         st.dataframe(rows, hide_index=True, width="stretch")
         _evidence(
             split,
-            sum(row["Registros privados"] for row in rows),
-            "derivado",
-            "Las ventanas con 105 variables permanecen en su nodo.",
+            sum(row["Registros asignados"] for row in rows),
+            "partición experimental",
+            "Los resúmenes de ventana se asignan a particiones lógicas; "
+            "no se publican en los estados. La cobertura es uno menos la tasa "
+            "media de valores ausentes; no mide precisión predictiva.",
         )
     with right:
         st.subheader("Transferencias registradas")
@@ -564,6 +611,9 @@ def _render_federation(active_split: DatasetSplit) -> None:
                 "Tipo": kind,
                 "Mensajes": values["messages"],
                 "Datos": _bytes(values["payload_bytes"]),
+                "Cálculo": (
+                    "Serializado" if kind == "published_state" else "Estimado"
+                ),
             }
             for kind, values in transfer["by_type"].items()
             if values["messages"]
@@ -573,7 +623,8 @@ def _render_federation(active_split: DatasetSplit) -> None:
             split,
             transfer["messages"],
             "derivado",
-            "El ledger separa estados, parámetros y distribuciones del modelo.",
+            "El ledger separa estados serializados de bytes estimados de "
+            "parámetros y distribución del modelo.",
         )
     reduction = data.get("publication_reduction_ratio")
     if reduction is not None:
@@ -585,8 +636,8 @@ def _render_federation(active_split: DatasetSplit) -> None:
     rounds = parameters.get("messages", 0) // max(len(data["nodes"]), 1)
     st.caption(
         f"{rounds} rondas registradas · {parameters.get('messages', 0)} envíos "
-        f"de parámetros · {_bytes(parameters.get('payload_bytes', 0))} · "
-        "Coordinador sin datos operativos crudos"
+        f"de parámetros estimados · {_bytes(parameters.get('payload_bytes', 0))} · "
+        "coordinador de estados sin datos operativos crudos"
     )
 
 

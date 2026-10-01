@@ -1,4 +1,5 @@
 from minetwin.data.scania.contracts import (
+    SCANIA_CLASS_DESCRIPTIONS,
     SCANIA_CLASS_WINDOWS,
     SCANIA_COST_MATRIX,
     DatasetSplit,
@@ -26,6 +27,7 @@ from minetwin.data.scania.replay import (
 from minetwin.data.scania.serialization import decode_readout, encode_readout
 
 __all__ = [
+    "SCANIA_CLASS_DESCRIPTIONS",
     "SCANIA_CLASS_WINDOWS",
     "SCANIA_COST_MATRIX",
     "CategoricalNodePartitioner",

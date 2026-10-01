@@ -71,6 +71,27 @@ def test_cost_sensitive_decision_and_metrics_use_official_cost_matrix():
     assert SCANIA_COST_MATRIX[4][0] == 500
 
 
+def test_calibration_and_class_diagnostics_keep_argmax_separate_from_cost_decision():
+    labels = np.arange(5)
+    perfect = classification_metrics(labels, np.eye(5))
+    assert perfect["brier_score"] == 0
+    assert perfect["log_loss"] == 0
+    assert perfect["argmax_ece"] == 0
+    assert perfect["support"] == [1] * 5
+    assert perfect["mean_cost_by_class"] == [0] * 5
+
+    probabilities = np.broadcast_to(
+        np.asarray((0.8, 0.05, 0.05, 0.05, 0.05)), (5, 5)
+    )
+    metrics = classification_metrics(labels, probabilities)
+    argmax = classification_metrics(labels, probabilities, decision="argmax")
+    assert metrics["argmax_accuracy"] == pytest.approx(0.2)
+    assert metrics["argmax_ece"] == pytest.approx(0.6)
+    assert metrics["predicted_support"] != [5, 0, 0, 0, 0]
+    assert argmax["predicted_support"] == [5, 0, 0, 0, 0]
+    assert argmax["total_cost"] != metrics["total_cost"]
+
+
 def test_cross_validation_keeps_every_vehicle_in_one_fold():
     vehicles = np.asarray(("A", "A", "B", "C", "C", "D", "E", "F"))
     labels = np.asarray((0, 1, 0, 2, 3, 4, 1, 2))

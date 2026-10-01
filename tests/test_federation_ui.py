@@ -3,15 +3,12 @@ from pathlib import Path
 from streamlit.testing.v1 import AppTest
 
 from minetwin.domain import OrderStatus
-from minetwin.langflow_client import LangflowClient
 
-APP_PATH = Path(__file__).parents[1] / "app.py"
+APP_PATH = Path(__file__).parents[1] / "simulation_app.py"
 
 
 def _simulation_app() -> AppTest:
-    app = AppTest.from_file(APP_PATH, default_timeout=20)
-    app.session_state.application_mode = "simulation"
-    return app
+    return AppTest.from_file(APP_PATH, default_timeout=20)
 
 
 def test_truck_selection_federation_quality_disconnect_and_reconnect():
@@ -60,30 +57,3 @@ def test_maintenance_targets_selected_component_and_truck():
     assert not app.exception
 
 
-def test_assistant_runs_only_on_request_and_invalidates_previous_explanations(
-    monkeypatch,
-):
-    monkeypatch.setenv("MINETWIN_LANGFLOW_URL", "http://localhost:7860")
-    monkeypatch.setenv("MINETWIN_LANGFLOW_FLOW_ID", "flow")
-    monkeypatch.setenv("MINETWIN_LANGFLOW_API_KEY", "key")
-    calls = []
-
-    def explain(self, view):
-        calls.append(view)
-        return "Explicación de prueba"
-
-    monkeypatch.setattr(LangflowClient, "explain", explain)
-    app = _simulation_app().run()
-    assert app.button(key="explain_condition").disabled
-    app.button(key="step").click().run()
-    initial_time = app.session_state.fleet.time
-    assert not calls
-    app.button(key="explain_condition").click().run()
-    assert len(calls) == 1
-    assert app.session_state.fleet.time == initial_time
-    assert any(item.value == "Explicación de prueba" for item in app.text)
-    app.button(key="step").click().run()
-    assert not any(item.value == "Explicación de prueba" for item in app.text)
-    app.button(key="start").click().run()
-    assert app.button(key="explain_condition").disabled
-    assert not app.exception

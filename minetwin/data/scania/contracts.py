@@ -17,6 +17,14 @@ SCANIA_CLASS_WINDOWS = (
     (4, 0.0, 6.0),
 )
 
+SCANIA_CLASS_DESCRIPTIONS = (
+    "Más de 48 pasos o sin reparación",
+    "Entre 24 y 48 pasos",
+    "Entre 12 y 24 pasos",
+    "Entre 6 y 12 pasos",
+    "Hasta 6 pasos",
+)
+
 SCANIA_COST_MATRIX = (
     (0, 7, 8, 9, 10),
     (200, 0, 7, 8, 9),
