@@ -5,10 +5,12 @@ import numpy as np
 import pytest
 
 from minetwin.learning.data import CachedSplit
+from minetwin.learning.diagnostics import run_model_diagnostics
 from minetwin.learning.federation import ScaniaFederatedInference
 from minetwin.learning.inference import risk_assessment
 from minetwin.learning.provenance import (
     training_provenance,
+    verified_evaluation_provenance,
     verify_training_provenance,
 )
 from minetwin.publication import PublishedCondition
@@ -105,6 +107,11 @@ def test_training_provenance_detects_cache_or_model_changes(tmp_path):
         "provenance": training_provenance(cache, models, {"seed": 100}, "2.14.0"),
     }
     assert verify_training_provenance(cache, models, report) == report["provenance"]
+    _, provenance = verified_evaluation_provenance(
+        cache, models, report, "validation"
+    )
+    assert provenance["verified"]
+    assert provenance["training_id"] == report["provenance"]["run_id"]
     (models / "fedprox.pt").write_bytes(b"changed")
     with pytest.raises(ValueError, match="no coinciden"):
         verify_training_provenance(cache, models, report)
@@ -112,6 +119,36 @@ def test_training_provenance_detects_cache_or_model_changes(tmp_path):
     (cache / "train.npz").write_bytes(b"changed")
     with pytest.raises(ValueError, match="no coinciden"):
         verify_training_provenance(cache, models, report)
+
+
+@pytest.mark.parametrize("changed_artifact", ("cache", "model"))
+def test_diagnostics_rejects_artifacts_without_matching_provenance(
+    tmp_path, changed_artifact
+):
+    cache = tmp_path / "cache"
+    models = tmp_path / "models"
+    cache.mkdir()
+    models.mkdir()
+    for name in ("train.npz", "validation.npz", "metadata.json"):
+        (cache / name).write_bytes(name.encode())
+    (models / "scaler.npz").write_bytes(b"scaler")
+    model = models / "fedprox.pt"
+    model.write_bytes(b"model")
+    config = {"seed": 100}
+    report = {
+        "config": config,
+        "torch": "2.14.0",
+        "provenance": training_provenance(cache, models, config, "2.14.0"),
+    }
+    (models / "metrics.json").write_text(json.dumps(report), encoding="utf-8")
+    target = cache / "train.npz" if changed_artifact == "cache" else model
+    target.write_bytes(b"changed")
+
+    output = tmp_path / "diagnostics"
+    with pytest.raises(ValueError, match="no coinciden"):
+        run_model_diagnostics(cache, models, output)
+
+    assert not output.exists()
 
 
 def test_legacy_models_cannot_be_published_without_provenance(tmp_path):

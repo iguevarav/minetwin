@@ -3,7 +3,6 @@ import json
 
 import pytest
 
-from minetwin.domain import Scenario
 from minetwin.langflow_client import FLOW_INSTRUCTIONS, PROMPT_VERSION
 from minetwin.learning import TrainingConfig
 from minetwin.learning.provenance import (
@@ -13,10 +12,8 @@ from minetwin.learning.provenance import (
 )
 from minetwin.study import (
     LearningStudyConfig,
-    WorkshopStudyConfig,
     build_study_report,
     run_learning_study,
-    run_workshop_study,
 )
 
 
@@ -43,6 +40,13 @@ def test_learning_study_exports_paired_statistics(monkeypatch, tmp_path):
         }
 
     monkeypatch.setattr("minetwin.study.train_learning_regimes", train)
+    monkeypatch.setattr(
+        "minetwin.study.verify_training_provenance",
+        lambda cache, models, report: {
+            "cache": {"train.npz": "hash"},
+            "run_id": models.name,
+        },
+    )
     output = tmp_path / "learning"
     summary = run_learning_study(
         tmp_path,
@@ -54,6 +58,7 @@ def test_learning_study_exports_paired_statistics(monkeypatch, tmp_path):
         ),
     )
     assert summary["runs"] == 8
+    assert summary["provenance"]["verified"]
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["status"] == "complete"
     with (output / "statistics.csv").open(encoding="utf-8", newline="") as source:
@@ -62,30 +67,7 @@ def test_learning_study_exports_paired_statistics(monkeypatch, tmp_path):
     assert all(row["p_value_holm"] for row in rows)
 
 
-def test_workshop_study_exports_cost_sensitivity_and_noninferiority(tmp_path):
-    output = tmp_path / "workshop"
-    summary = run_workshop_study(
-        output,
-        WorkshopStudyConfig(
-            seeds=(100,),
-            scenarios=(Scenario.NORMAL,),
-            bays=(1,),
-            cost_ratios=(3, 5),
-            steps=30,
-            bootstrap_samples=100,
-        ),
-    )
-    assert summary["simulations"] == 4
-    assert summary["cost_evaluations"] == 8
-    assert summary["noninferiority"]["pairs"] == 1
-    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["status"] == "complete"
-    with (output / "metrics.csv").open(encoding="utf-8", newline="") as source:
-        rows = list(csv.DictReader(source))
-    assert {row["cost_ratio"] for row in rows} == {"3", "5"}
-
-
-def test_real_report_excludes_simulation_and_rejects_old_langflow(tmp_path):
+def test_real_report_requires_verified_scania_sources(tmp_path):
     paths = {
         name: tmp_path / name
         for name in (
@@ -207,6 +189,21 @@ def test_real_report_excludes_simulation_and_rejects_old_langflow(tmp_path):
         {"training_id": training_id, "split": "validation", "sha256": split_hash}
     )
     model_id = f"fedprox:{file_sha256(model_root / 'fedprox.pt')[:12]}"
+    learning_summary = json.loads((learning / "summary.json").read_text())
+    learning_summary["provenance"] = {
+        "verified": True,
+        "cache_sha256": model_report["provenance"]["cache"],
+        "training_ids": {"100": training_id, "101": "other-training"},
+    }
+    _json(learning / "summary.json", learning_summary)
+    evaluation_provenance = {
+        "verified": True,
+        "training_id": training_id,
+        "data_version": data_version,
+        "split_sha256": split_hash,
+        "cache_sha256": model_report["provenance"]["cache"],
+        "training_config": training_config,
+    }
     federation = paths["federation"]
     (federation / "published_states.jsonl").write_text("{}\n", encoding="utf-8")
     _json(
@@ -223,10 +220,7 @@ def test_real_report_excludes_simulation_and_rejects_old_langflow(tmp_path):
             "transfer": {"messages": 1, "payload_bytes": 10, "raw_records": 0},
             "nodes": {"alpha": {"private_records": 1, "published_states": 1}},
             "provenance": {
-                "verified": True,
-                "training_id": training_id,
-                "data_version": data_version,
-                "split_sha256": split_hash,
+                **evaluation_provenance,
                 "model_ids": {"alpha": model_id},
             },
         },
@@ -239,6 +233,10 @@ def test_real_report_excludes_simulation_and_rejects_old_langflow(tmp_path):
             "split": "validation",
             "regime": "fedprox",
             "examples": 1,
+            "provenance": {
+                **evaluation_provenance,
+                "model_ids": {"fedprox": model_id},
+            },
         },
     )
     (interpretation / "permutation_importance.csv").write_text(
@@ -262,6 +260,7 @@ def test_real_report_excludes_simulation_and_rejects_old_langflow(tmp_path):
         "data_version": data_version,
         "predictive_models": [model_id],
         "language_model_id": "ollama-model",
+        "langflow_url": "http://localhost:7860",
         "flow_id": "flow-1",
         "flow_version": "1",
         "flow_definition_sha256": file_sha256(langflow / "flow_definition.json"),
@@ -282,12 +281,10 @@ def test_real_report_excludes_simulation_and_rejects_old_langflow(tmp_path):
     )
     output = tmp_path / "report"
     summary = build_study_report(output, **paths)
-    assert "workshop" not in summary
-    assert "Taller" not in (output / "report.html").read_text(encoding="utf-8")
     assert json.loads((output / "manifest.json").read_text(encoding="utf-8"))[
         "status"
     ] == "complete"
-    flow_manifest["source"] = "Synthetic academic simulation"
+    flow_manifest["source"] = "unverified source"
     _json(langflow / "manifest.json", flow_manifest)
     with pytest.raises(ValueError, match="Langflow"):
         build_study_report(tmp_path / "rejected", **paths)

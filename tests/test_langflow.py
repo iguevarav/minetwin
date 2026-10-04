@@ -96,7 +96,13 @@ def test_langflow_request_contains_only_published_scania_evidence(observation):
 
 @pytest.mark.parametrize(
     "body",
-    [b"invalid-json", b"[]", b"{}", b'{"outputs": null}', b"x" * 1_000_001],
+    [
+        b"invalid-json",
+        b"[]",
+        b"{}",
+        b'{"outputs": null}',
+        pytest.param(b"x" * 1_000_001, id="oversized_response"),
+    ],
 )
 def test_malformed_empty_or_oversized_responses_fail_cleanly(observation, body):
     client, _ = client_with_response(body)

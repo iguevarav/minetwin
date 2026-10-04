@@ -2,7 +2,6 @@ from dataclasses import dataclass
 from enum import StrEnum
 from math import isclose, isfinite
 
-from minetwin.domain import AssetStatus, EngineStatus, ForecastStatus
 
 
 class PublishedCondition(StrEnum):
@@ -59,36 +58,3 @@ class PublishedTwinState:
             raise ValueError("El estado requiere versiones de datos y entrenamiento.")
         if self.schema_version != 2:
             raise ValueError("Version de estado publicado no admitida.")
-
-
-@dataclass(frozen=True)
-class PublishedOperationalState:
-    truck_id: str
-    node_id: str
-    version: int
-    source_time: str
-    asset_status: AssetStatus
-    engine_status: EngineStatus
-    forecast_status: ForecastStatus | None
-    hours_to_threshold: float | None
-    cycles: int
-    capacity_tonnes: float
-    active_alert: bool
-    open_order: bool
-    schema_version: int = 1
-
-    def __post_init__(self) -> None:
-        if not self.truck_id or not self.node_id or not self.source_time:
-            raise ValueError("El estado operativo requiere identidad y tiempo.")
-        if type(self.version) is not int or self.version < 1:
-            raise ValueError("version debe ser un entero positivo.")
-        if type(self.cycles) is not int or self.cycles < 0:
-            raise ValueError("cycles debe ser un entero no negativo.")
-        if not isfinite(self.capacity_tonnes) or self.capacity_tonnes <= 0:
-            raise ValueError("capacity_tonnes debe ser positiva y finita.")
-        if self.hours_to_threshold is not None and (
-            not isfinite(self.hours_to_threshold) or self.hours_to_threshold < 0
-        ):
-            raise ValueError("hours_to_threshold debe ser no negativo y finito.")
-        if self.schema_version != 1:
-            raise ValueError("Version de estado operativo no admitida.")

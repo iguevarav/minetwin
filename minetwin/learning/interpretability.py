@@ -9,6 +9,7 @@ import numpy as np
 from minetwin.learning.data import CachedSplit
 from minetwin.learning.inference import TorchRiskPrognosticator
 from minetwin.learning.metrics import mean_misclassification_cost
+from minetwin.learning.provenance import verified_evaluation_provenance
 
 
 @dataclass(frozen=True)
@@ -36,11 +37,14 @@ def run_permutation_importance(
     if regime not in ("centralized", "fedavg", "fedprox"):
         raise ValueError("La importancia requiere un modelo global.")
     effective = config or PermutationConfig()
+    cache = Path(cache)
+    models = Path(models)
+    training = json.loads((models / "metrics.json").read_text(encoding="utf-8"))
+    _, provenance = verified_evaluation_provenance(cache, models, training, split)
     output = Path(output)
     output.mkdir(parents=True, exist_ok=False)
     try:
-        cached = CachedSplit.load(Path(cache) / f"{split}.npz")
-        models = Path(models)
+        cached = CachedSplit.load(cache / f"{split}.npz")
         predictor = TorchRiskPrognosticator.load(
             models / f"{regime}.pt",
             models / "scaler.npz",
@@ -57,6 +61,10 @@ def run_permutation_importance(
             "examples": len(cached.labels),
             "baseline_mean_cost": baseline,
             "config": asdict(effective),
+            "provenance": {
+                **provenance,
+                "model_ids": {regime: predictor.model_id},
+            },
             "groups": {
                 dimension: sum(row["dimension"] == dimension for row in rows)
                 for dimension in ("source_variable", "temporal_statistic")

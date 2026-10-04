@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 
 from minetwin.data.scania import ScaniaReplayView
+from minetwin.langflow_client import LangflowError, ScaniaExplanationObservation
 from minetwin.learning import FeatureConfig, WindowVectorizer
 from minetwin.learning.data import CachedSplit
 from minetwin.learning.provenance import (
@@ -12,7 +13,6 @@ from minetwin.learning.provenance import (
     verify_training_provenance,
 )
 from minetwin.learning.scaling import FederatedStandardScaler
-from minetwin.langflow_client import LangflowError, ScaniaExplanationObservation
 from minetwin.paths import RESULTS_ROOT
 from minetwin.publication import (
     PublishedCondition,

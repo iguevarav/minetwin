@@ -52,3 +52,31 @@ def verify_training_provenance(
             "con el entrenamiento registrado."
         )
     return actual
+
+
+def verified_evaluation_provenance(
+    cache: Path,
+    models: Path,
+    report: dict,
+    split: str,
+) -> tuple[dict, dict]:
+    if split not in ("train", "validation", "test"):
+        raise ValueError("El split de evaluacion no es valido.")
+    cache = Path(cache)
+    training = verify_training_provenance(cache, models, report)
+    split_sha256 = file_sha256(cache / f"{split}.npz")
+    training_id = training["run_id"]
+    return training, {
+        "verified": True,
+        "training_id": training_id,
+        "data_version": value_sha256(
+            {
+                "training_id": training_id,
+                "split": split,
+                "sha256": split_sha256,
+            }
+        ),
+        "split_sha256": split_sha256,
+        "cache_sha256": training["cache"],
+        "training_config": report["config"],
+    }

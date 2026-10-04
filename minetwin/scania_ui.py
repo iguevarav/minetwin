@@ -14,6 +14,7 @@ from minetwin.data.scania import (
 )
 from minetwin.learning import FeatureConfig, WindowVectorizer
 from minetwin.learning.inference import TorchRiskPrognosticator
+from minetwin.learning.provenance import verify_training_provenance
 from minetwin.paths import DATASET_ROOT, RESULTS_ROOT, result_path
 from minetwin.publication import PublishedCondition, RiskAssessment
 from minetwin.research_ui import render_learning_results
@@ -186,7 +187,10 @@ def _render_dashboard(
     missing_rate = split_summary["missing_values"] / (
         split_summary["readouts"] * split_summary["features"]
     )
-    model_root = _model_root(regime, vehicles[0].node_id)
+    try:
+        model_root = _model_root(regime, vehicles[0].node_id)
+    except (OSError, ValueError):
+        model_root = None
     columns = st.columns(5)
     columns[0].metric("Vehículos", f"{len(vehicles):,}")
     columns[1].metric("Readouts", f"{split_summary['readouts']:,}")
@@ -719,12 +723,23 @@ def _evidence(
 
 
 def _model_root(regime: str, node_id: str) -> Path | None:
+    verified = MODEL_ROOTS[0]
+    if (verified / "metrics.json").is_file():
+        _verify_model_root(verified)
+        return verified if _model_path(verified, regime, node_id).is_file() else None
     for root in MODEL_ROOTS:
         if (root / "scaler.npz").is_file() and _model_path(
             root, regime, node_id
         ).is_file():
             return root
     return None
+
+
+def _verify_model_root(root: Path) -> None:
+    report = _read_json(root / "metrics.json")
+    if report is None:
+        raise OSError("no existe el reporte de procedencia del modelo")
+    verify_training_provenance(LEARNING_METADATA.parent, root, report)
 
 
 def _model_path(root: Path, regime: str, node_id: str) -> Path:

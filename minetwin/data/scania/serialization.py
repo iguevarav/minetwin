@@ -1,10 +1,16 @@
 import csv
 import io
 import json
+from enum import StrEnum
 from xml.etree import ElementTree as ET
 
 from minetwin.data.scania.contracts import DatasetSplit, FeatureReadout
-from minetwin.domain import WireFormat
+
+
+class WireFormat(StrEnum):
+    JSON = "json"
+    XML = "xml"
+    CSV = "csv"
 
 IDENTITY_FIELDS = ("split", "vehicle_id", "time_step")
 

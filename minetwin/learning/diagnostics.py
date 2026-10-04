@@ -10,7 +10,10 @@ from minetwin.learning.metrics import (
     classification_metrics,
     grouped_classification_metrics,
 )
-from minetwin.learning.provenance import file_sha256
+from minetwin.learning.provenance import (
+    file_sha256,
+    verified_evaluation_provenance,
+)
 
 REGIMES = ("local", "centralized", "fedavg", "fedprox")
 
@@ -18,11 +21,14 @@ REGIMES = ("local", "centralized", "fedavg", "fedprox")
 def run_model_diagnostics(cache: Path, models: Path, output: Path) -> dict:
     cache = Path(cache)
     models = Path(models)
+    training = json.loads((models / "metrics.json").read_text(encoding="utf-8"))
+    _, provenance = verified_evaluation_provenance(
+        cache, models, training, "validation"
+    )
     train = CachedSplit.load(cache / "train.npz")
     validation = CachedSplit.load(cache / "validation.npz")
     if train.feature_names != validation.feature_names:
         raise ValueError("Entrenamiento y validación no comparten variables.")
-    training = json.loads((models / "metrics.json").read_text(encoding="utf-8"))
     metadata = json.loads((cache / "metadata.json").read_text(encoding="utf-8"))
     if training["features"] != len(validation.feature_names):
         raise ValueError("El modelo y la caché no comparten variables.")
@@ -71,6 +77,7 @@ def run_model_diagnostics(cache: Path, models: Path, output: Path) -> dict:
         "training_config": training["config"],
         "torch": training["torch"],
         "model_ids": model_ids,
+        "provenance": {**provenance, "model_ids": model_ids},
         "sha256": {
             "train_cache": file_sha256(cache / "train.npz"),
             "validation_cache": file_sha256(cache / "validation.npz"),

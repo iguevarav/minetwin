@@ -13,8 +13,7 @@ from minetwin.learning.inference import (
 )
 from minetwin.learning.provenance import (
     file_sha256,
-    value_sha256,
-    verify_training_provenance,
+    verified_evaluation_provenance,
 )
 from minetwin.publication import PublishedTwinState
 from minetwin.transfer import (
@@ -216,12 +215,10 @@ class ScaniaFederatedInference:
         cache = Path(cache)
         models = Path(models)
         report = json.loads((models / "metrics.json").read_text(encoding="utf-8"))
-        training = verify_training_provenance(cache, models, report)
-        metadata = json.loads((cache / "metadata.json").read_text(encoding="utf-8"))
-        split_hash = file_sha256(cache / f"{split}.npz")
-        data_version = value_sha256(
-            {"training_id": training["run_id"], "split": split, "sha256": split_hash}
+        _, provenance = verified_evaluation_provenance(
+            cache, models, report, split
         )
+        metadata = json.loads((cache / "metadata.json").read_text(encoding="utf-8"))
         cached = CachedSplit.load(cache / f"{split}.npz")
         if cached.features.shape[1] != report["features"]:
             raise ValueError("El split publicado no coincide con el modelo entrenado.")
@@ -250,12 +247,7 @@ class ScaniaFederatedInference:
             predictors,
             regime,
             {
-                "verified": True,
-                "training_id": training["run_id"],
-                "data_version": data_version,
-                "split_sha256": split_hash,
-                "cache_sha256": training["cache"],
-                "training_config": report["config"],
+                **provenance,
                 "feature_config": metadata["feature_config"],
                 "partition_config": metadata.get("partition_config"),
                 "source_manifest_sha256": metadata.get("source_manifest_sha256"),

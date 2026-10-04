@@ -11,6 +11,7 @@ from minetwin.data.scania import (
     ScaniaManifest,
     ScaniaReplaySession,
     ScaniaReplayStore,
+    WireFormat,
     WindowConfig,
     build_windows,
     decode_readout,
@@ -18,7 +19,6 @@ from minetwin.data.scania import (
     prepare_replay_store,
     prepare_scania_dataset,
 )
-from minetwin.domain import WireFormat
 
 
 def _write(path: Path, fieldnames: tuple[str, ...], rows: list[tuple]) -> None:

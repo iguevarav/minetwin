@@ -151,6 +151,9 @@ def run_langflow_evaluation(
         raise ValueError(
             "Exporta el flujo Langflow y pásalo con --flow-definition."
         )
+    model_id = os.environ.get("MINETWIN_LANGFLOW_MODEL_ID", "").strip()
+    if cases is None and not model_id:
+        raise ValueError("Falta MINETWIN_LANGFLOW_MODEL_ID.")
     active_client = client
     if active_client is None:
         configuration = LangflowConfig.from_environment()
@@ -189,7 +192,8 @@ def run_langflow_evaluation(
         "flow_definition_sha256": flow_hash,
         "prompt_version": PROMPT_VERSION,
         "prompt_sha256": hashlib.sha256(FLOW_INSTRUCTIONS.encode()).hexdigest(),
-        "language_model_id": os.environ.get("MINETWIN_LANGFLOW_MODEL_ID", ""),
+        "language_model_id": model_id,
+        "langflow_url": active_client.config.base_url,
         "predictive_models": sorted(
             {
                 case.observation.state.risk.model_id
@@ -323,6 +327,9 @@ def summarize_langflow_review(output: Path) -> dict:
     manifest_path = output / "manifest.json"
     if not review_path.is_file() or not manifest_path.is_file():
         raise ValueError("El directorio no contiene una evaluación Langflow completa.")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("status") != "complete":
+        raise ValueError("La evaluacion Langflow no esta completa.")
     with review_path.open(encoding="utf-8", newline="") as stream:
         reader = csv.DictReader(stream)
         if reader.fieldnames is None or not set(REVIEW_FIELDS).issubset(
@@ -363,7 +370,6 @@ def summarize_langflow_review(output: Path) -> dict:
     (output / "review_summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["human_review"] = summary
     manifest_path.write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
