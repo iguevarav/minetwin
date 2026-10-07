@@ -24,7 +24,11 @@ from minetwin.data.scania.replay import (
     ScaniaReplayView,
     prepare_replay_store,
 )
-from minetwin.data.scania.serialization import WireFormat, decode_readout, encode_readout
+from minetwin.data.scania.serialization import (
+    WireFormat,
+    decode_readout,
+    encode_readout,
+)
 
 __all__ = [
     "SCANIA_CLASS_DESCRIPTIONS",

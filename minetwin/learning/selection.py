@@ -27,9 +27,7 @@ def _default_candidates() -> tuple[TrainingConfig, ...]:
 class SelectionConfig:
     folds: int = 5
     seed: int = 42
-    candidates: tuple[TrainingConfig, ...] = field(
-        default_factory=_default_candidates
-    )
+    candidates: tuple[TrainingConfig, ...] = field(default_factory=_default_candidates)
 
     def __post_init__(self) -> None:
         if type(self.folds) is not int or self.folds < 2:
@@ -158,9 +156,7 @@ def grouped_vehicle_folds(
     vehicle_ids = np.asarray(vehicle_ids)
     labels = np.asarray(labels)
     nodes = np.asarray(nodes)
-    if not len(vehicle_ids) or not (
-        len(vehicle_ids) == len(labels) == len(nodes)
-    ):
+    if not len(vehicle_ids) or not (len(vehicle_ids) == len(labels) == len(nodes)):
         raise ValueError("Los vectores de ejemplos no coinciden.")
     vehicles = np.unique(vehicle_ids)
     if len(vehicles) < folds:
@@ -201,7 +197,7 @@ def describe_cache(cache: Path) -> dict:
             }
         )
     train = CachedSplit.load(cache / "train.npz")
-    source_summary = _source_summary(metadata)
+    source_summary = _source_summary(cache, metadata)
     return {
         "feature_count": len(train.feature_names),
         "feature_config": metadata["feature_config"],
@@ -295,17 +291,12 @@ def _candidate_fields(config: TrainingConfig, input_size: int) -> dict:
 
 def _parameter_count(input_size: int, hidden: tuple[int, ...], output: int) -> int:
     sizes = (input_size, *hidden, output)
-    return sum(
-        (source + 1) * target
-        for source, target in pairwise(sizes)
-    )
+    return sum((source + 1) * target for source, target in pairwise(sizes))
 
 
 def _scalar_metrics(metrics: dict) -> dict:
     return {
-        key: value
-        for key, value in metrics.items()
-        if isinstance(value, (int, float))
+        key: value for key, value in metrics.items() if isinstance(value, (int, float))
     }
 
 
@@ -328,9 +319,10 @@ def _node_classes(cached: CachedSplit) -> list[dict]:
     ]
 
 
-def _source_summary(metadata: dict) -> dict:
-    manifest = Path(metadata["source_manifest"])
-    summary = manifest.with_name("summary.json")
+def _source_summary(cache: Path, metadata: dict) -> dict:
+    summary = cache.parent / "01_datos" / "summary.json"
+    if not summary.is_file():
+        summary = Path(metadata["source_manifest"]).with_name("summary.json")
     if not summary.is_file():
         return {}
     payload = json.loads(summary.read_text(encoding="utf-8"))
@@ -348,7 +340,9 @@ def _class_separation(cached: CachedSplit, limit: int) -> list[dict]:
     for label in range(5):
         selected = cached.labels == label
         if np.any(selected):
-            between += np.sum(selected) * (np.mean(features[selected], axis=0) - overall) ** 2
+            between += (
+                np.sum(selected) * (np.mean(features[selected], axis=0) - overall) ** 2
+            )
     score = np.divide(
         between,
         total,

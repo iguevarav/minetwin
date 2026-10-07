@@ -18,9 +18,9 @@ REGIME_LABELS = {
 def render_learning_results(root: Path = RESULTS_ROOT) -> None:
     st.caption("VALIDACIÃ“N CON DATOS REALES")
     selection = _selection_path(root)
-    final = root / "remediation_multiseed"
-    diagnostics = root / "remediation_diagnostics"
-    interpretability = root / "remediation_interpretability"
+    final = root / "06_aprendizaje"
+    diagnostics = root / "08_diagnostico"
+    interpretability = root / "09_interpretabilidad"
     tabs = st.tabs(
         (
             "EDA",
@@ -34,11 +34,11 @@ def render_learning_results(root: Path = RESULTS_ROOT) -> None:
         )
     )
     with tabs[0]:
-        _render_dataset(root / "phase1_scania" / "summary.json")
+        _render_dataset(root / "01_datos" / "summary.json")
         _render_eda(selection / "eda.json")
     with tabs[1]:
         if (final / "metrics.csv").is_file():
-            _render_final_learning(final)
+            _render_multiseed_learning(final)
     with tabs[2]:
         _render_diagnostics(diagnostics / "diagnostics.json")
     with tabs[3]:
@@ -50,11 +50,11 @@ def render_learning_results(root: Path = RESULTS_ROOT) -> None:
     with tabs[6]:
         _render_statistics(final)
     with tabs[7]:
-        _render_sovereignty(root / "remediation_federation" / "summary.json")
+        _render_sovereignty(root / "07_federacion" / "summary.json")
 
 
 def _verified_learning_path(root: Path) -> Path | None:
-    path = root / "remediation_multiseed"
+    path = root / "06_aprendizaje"
     manifest = _json(path / "manifest.json")
     if manifest is not None and (path / "seed_100" / "metrics.json").is_file():
         return path
@@ -247,7 +247,7 @@ def _render_preliminary_learning(path: Path) -> None:
     _render_training_history(report)
 
 
-def _render_final_learning(path: Path) -> None:
+def _render_multiseed_learning(path: Path) -> None:
     metrics = _csv(path / "metrics.csv")
     rows = []
     for regime in sorted({row["regime"] for row in metrics}):
@@ -1052,7 +1052,7 @@ def _bytes(value: int) -> str:
 
 
 def _selection_path(root: Path) -> Path:
-    final = root / "final_selection"
+    final = root / "04_seleccion_modelo"
     return final if final.is_dir() else root / "model_selection"
 
 

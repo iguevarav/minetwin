@@ -280,7 +280,7 @@ def test_real_report_requires_verified_scania_sources(tmp_path):
         },
     )
     output = tmp_path / "report"
-    summary = build_study_report(output, **paths)
+    build_study_report(output, **paths)
     assert json.loads((output / "manifest.json").read_text(encoding="utf-8"))[
         "status"
     ] == "complete"

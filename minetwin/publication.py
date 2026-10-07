@@ -3,7 +3,6 @@ from enum import StrEnum
 from math import isclose, isfinite
 
 
-
 class PublishedCondition(StrEnum):
     NORMAL = "normal"
     WATCH = "watch"

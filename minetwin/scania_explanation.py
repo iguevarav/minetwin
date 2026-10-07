@@ -24,9 +24,9 @@ from minetwin.publication import (
 class ScaniaExplanationSource:
     def __init__(
         self,
-        cache: Path = RESULTS_ROOT / "phase2_cache",
-        models: Path = RESULTS_ROOT / "remediation_multiseed" / "seed_100",
-        publication: Path = RESULTS_ROOT / "remediation_federation",
+        cache: Path = RESULTS_ROOT / "03_cache",
+        models: Path = RESULTS_ROOT / "06_aprendizaje" / "seed_100",
+        publication: Path = RESULTS_ROOT / "07_federacion",
     ) -> None:
         cache = Path(cache)
         models = Path(models)

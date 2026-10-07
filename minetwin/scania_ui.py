@@ -19,15 +19,12 @@ from minetwin.paths import DATASET_ROOT, RESULTS_ROOT, result_path
 from minetwin.publication import PublishedCondition, RiskAssessment
 from minetwin.research_ui import render_learning_results
 
-REPLAY_INDEX = result_path("phase1_replay", "index.json")
-PHASE_ONE_SUMMARY = result_path("phase1_scania", "summary.json")
-LEARNING_METADATA = result_path("phase2_cache", "metadata.json")
-EDA_PATHS = (
-    result_path("final_selection", "eda.json"),
-    result_path("model_selection", "eda.json"),
-)
-FEDERATION_PATHS = (result_path("remediation_federation", "summary.json"),)
-MODEL_ROOTS = (result_path("remediation_multiseed", "seed_100"),)
+REPLAY_INDEX = result_path("02_reproduccion", "index.json")
+PHASE_ONE_SUMMARY = result_path("01_datos", "summary.json")
+LEARNING_METADATA = result_path("03_cache", "metadata.json")
+EDA_PATHS = (result_path("04_seleccion_modelo", "eda.json"),)
+FEDERATION_PATHS = (result_path("07_federacion", "summary.json"),)
+MODEL_ROOTS = (result_path("06_aprendizaje", "seed_100"),)
 VIEWS = (
     "Dashboard",
     "Datos y EDA",

@@ -96,9 +96,7 @@ def langflow_cases(
                 break
     if not cases:
         raise ValueError("No hay estados SCANIA vigentes para evaluar.")
-    missing = next(
-        (case for case in cases if case.observation.unavailable_count), None
-    )
+    missing = next((case for case in cases if case.observation.unavailable_count), None)
     if missing is None:
         for vehicle_id in source.states:
             observation = _latest_observation(source, store, vehicle_id)
@@ -148,9 +146,7 @@ def run_langflow_evaluation(
     flow_definition: Path | None = None,
 ) -> list[dict]:
     if cases is None and flow_definition is None:
-        raise ValueError(
-            "Exporta el flujo Langflow y pásalo con --flow-definition."
-        )
+        raise ValueError("Exporta el flujo Langflow y pásalo con --flow-definition.")
     model_id = os.environ.get("MINETWIN_LANGFLOW_MODEL_ID", "").strip()
     if cases is None and not model_id:
         raise ValueError("Falta MINETWIN_LANGFLOW_MODEL_ID.")
@@ -169,7 +165,7 @@ def run_langflow_evaluation(
         if source.split != "validation":
             raise ValueError("La evaluación requiere el split validation etiquetado.")
         store = ScaniaReplayStore(
-            DATASET_ROOT, RESULTS_ROOT / "phase1_replay" / "index.json"
+            DATASET_ROOT, RESULTS_ROOT / "02_reproduccion" / "index.json"
         )
         cases = langflow_cases(source, store)
     definition = None
@@ -295,9 +291,7 @@ def run_langflow_evaluation(
         with (output / "cases.jsonl").open("w", encoding="utf-8") as stream:
             for record in records:
                 stream.write(_json_value(record) + "\n")
-        with (output / "review.csv").open(
-            "w", encoding="utf-8", newline=""
-        ) as stream:
+        with (output / "review.csv").open("w", encoding="utf-8", newline="") as stream:
             writer = csv.DictWriter(stream, fieldnames=REVIEW_FIELDS)
             writer.writeheader()
             writer.writerows(review_rows)

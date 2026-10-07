@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import numpy as np
+from sklearn.ensemble import HistGradientBoostingClassifier
 
 from minetwin.learning.contracts import TrainingConfig
 from minetwin.learning.data import CachedSplit
@@ -52,6 +53,11 @@ def main() -> None:
     cv.add_argument("--output", type=Path, required=True)
     cv.add_argument("--folds", type=int, default=5)
     cv.add_argument("--seed", type=int, default=42)
+    references = commands.add_parser("references")
+    references.add_argument("--cache", type=Path, required=True)
+    references.add_argument("--output", type=Path, required=True)
+    references.add_argument("--folds", type=int, default=5)
+    references.add_argument("--seed", type=int, default=42)
     study = commands.add_parser("study")
     study.add_argument("--cache", type=Path, required=True)
     study.add_argument("--selection", type=Path, required=True)
@@ -60,8 +66,10 @@ def main() -> None:
     try:
         if args.command == "cv":
             result = run_decision_cv(args.cache, args.output, args.folds, args.seed)
+        elif args.command == "references":
+            result = run_reference_cv(args.cache, args.output, args.folds, args.seed)
         else:
-            result = run_remediation_study(args.cache, args.selection, args.output)
+            result = run_multiseed_study(args.cache, args.selection, args.output)
     except (OSError, RuntimeError, ValueError) as error:
         parser.error(str(error))
     print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -77,7 +85,6 @@ def run_decision_cv(cache: Path, output: Path, folds: int = 5, seed: int = 42) -
     )
     config = TrainingConfig(hidden_sizes=(64,), epochs=10, seed=seed)
     variant_rows = []
-    baseline_rows = []
     for fold in range(folds):
         training = assignments != fold
         validation = assignments == fold
@@ -106,16 +113,6 @@ def run_decision_cv(cache: Path, output: Path, folds: int = 5, seed: int = 42) -
                 variant.decision,
             )
             variant_rows.append(_metric_row(variant.name, fold, metrics, evaluation))
-        baseline_rows.extend(
-            _baseline_rows(
-                train_features,
-                train.labels[training],
-                evaluation_features,
-                train.labels[evaluation],
-                fold,
-                seed,
-            )
-        )
     summaries = _summary(variant_rows, "variant")
     winner = min(
         summaries,
@@ -127,8 +124,6 @@ def run_decision_cv(cache: Path, output: Path, folds: int = 5, seed: int = 42) -
     )
     _write_csv(output / "variant_folds.csv", variant_rows)
     _write_csv(output / "variant_summary.csv", summaries)
-    _write_csv(output / "baseline_folds.csv", baseline_rows)
-    _write_csv(output / "baseline_summary.csv", _summary(baseline_rows, "model"))
     _write_csv(output / "fold_assignments.csv", _fold_rows(train, assignments))
     selection = {
         "winner": winner["variant"],
@@ -151,7 +146,68 @@ def run_decision_cv(cache: Path, output: Path, folds: int = 5, seed: int = 42) -
     return selection
 
 
-def run_remediation_study(cache: Path, selection: Path, output: Path) -> dict:
+def run_reference_cv(cache: Path, output: Path, folds: int = 5, seed: int = 42) -> dict:
+    cache = Path(cache)
+    output = Path(output)
+    if not output.is_dir():
+        raise ValueError("La carpeta de selección de variante no existe.")
+    train = CachedSplit.load(cache / "train.npz")
+    assignments = grouped_vehicle_folds(
+        train.vehicle_ids, train.labels, train.nodes, folds, seed
+    )
+    rows = []
+    for fold in range(folds):
+        training = assignments != fold
+        validation = assignments == fold
+        evaluation = validation & _last_per_vehicle(train.vehicle_ids, validation)
+        scaler = FederatedStandardScaler.fit(
+            train.features[training], train.nodes[training]
+        )
+        train_features = scaler.transform(train.features[training])
+        evaluation_features = scaler.transform(train.features[evaluation])
+        labels = train.labels[training]
+        evaluation_labels = train.labels[evaluation]
+        logistic, _ = fit_centralized_candidate(
+            train_features,
+            labels,
+            evaluation_features,
+            TrainingConfig(hidden_sizes=(), epochs=30, seed=seed + fold),
+            False,
+        )
+        boosting = HistGradientBoostingClassifier(
+            max_depth=6,
+            max_iter=300,
+            early_stopping=True,
+            random_state=seed + fold,
+        )
+        boosting.fit(train_features, labels)
+        probabilities = _aligned_probabilities(
+            boosting.predict_proba(evaluation_features), boosting.classes_
+        )
+        for name, predicted in (
+            ("logistic_regression", logistic),
+            ("hist_gradient_boosting", probabilities),
+        ):
+            rows.append(
+                _metric_row(
+                    name,
+                    fold,
+                    classification_metrics(evaluation_labels, predicted, "cost"),
+                    evaluation,
+                    "model",
+                )
+            )
+    _write_csv(output / "reference_folds.csv", rows)
+    summary = _summary(rows, "model")
+    _write_csv(output / "reference_summary.csv", summary)
+    return {
+        "output": str(output),
+        "models": [row["model"] for row in summary],
+        "validation_used": False,
+    }
+
+
+def run_multiseed_study(cache: Path, selection: Path, output: Path) -> dict:
     cache = Path(cache)
     selected = json.loads(
         (Path(selection) / "selection.json").read_text(encoding="utf-8")
@@ -203,84 +259,10 @@ def run_remediation_study(cache: Path, selection: Path, output: Path) -> dict:
     return {"winner": variant.name, "output": str(output), "runs": len(rows)}
 
 
-def _baseline_rows(
-    train_features,
-    train_labels,
-    validation_features,
-    validation_labels,
-    fold,
-    seed,
-) -> list[dict]:
-    logistic, _ = fit_centralized_candidate(
-        train_features,
-        train_labels,
-        validation_features,
-        TrainingConfig(hidden_sizes=(), epochs=30, seed=seed + fold),
-        False,
-    )
-    boosted = _gradient_boosting(
-        train_features, train_labels, validation_features, seed + fold
-    )
-    return [
-        _metric_row(
-            name,
-            fold,
-            classification_metrics(validation_labels, probabilities, "cost"),
-            np.ones(len(validation_labels), dtype=bool),
-            "model",
-        )
-        for name, probabilities in (
-            ("logistic_regression", logistic),
-            ("gradient_boosted_stumps", boosted),
-        )
-    ]
-
-
-def _gradient_boosting(features, labels, evaluation, seed) -> np.ndarray:
-    generator = np.random.default_rng(seed)
-    classes = 5
-    prior = np.bincount(labels, minlength=classes) / len(labels)
-    logits = np.tile(np.log(prior), (len(labels), 1))
-    evaluation_logits = np.tile(np.log(prior), (len(evaluation), 1))
-    for _ in range(20):
-        probabilities = _softmax(logits)
-        residuals = np.eye(classes)[labels] - probabilities
-        feature, threshold = _best_stump(features, residuals, generator)
-        selected = features[:, feature] <= threshold
-        evaluation_selected = evaluation[:, feature] <= threshold
-        for mask, target in ((selected, logits), (~selected, logits)):
-            count = max(int(np.sum(mask)), 1)
-            target[mask] += 0.1 * np.sum(residuals[mask], axis=0) / count
-        left = np.sum(residuals[selected], axis=0) / max(int(np.sum(selected)), 1)
-        right = np.sum(residuals[~selected], axis=0) / max(int(np.sum(~selected)), 1)
-        evaluation_logits[evaluation_selected] += 0.1 * left
-        evaluation_logits[~evaluation_selected] += 0.1 * right
-    return _softmax(evaluation_logits)
-
-
-def _best_stump(features, residuals, generator) -> tuple[int, float]:
-    feature_ids = generator.choice(
-        features.shape[1], size=min(12, features.shape[1]), replace=False
-    )
-    best = (float("-inf"), 0, 0.0)
-    for feature in feature_ids:
-        values = features[:, feature]
-        for threshold in np.quantile(values, np.linspace(0.1, 0.9, 9)):
-            left = values <= threshold
-            left_count = max(int(np.sum(left)), 1)
-            right_count = len(values) - left_count
-            if not right_count:
-                continue
-            gain = np.sum(np.sum(residuals[left], axis=0) ** 2) / left_count
-            gain += np.sum(np.sum(residuals[~left], axis=0) ** 2) / right_count
-            best = max(best, (float(gain), int(feature), float(threshold)))
-    return best[1], best[2]
-
-
-def _softmax(values: np.ndarray) -> np.ndarray:
-    shifted = values - np.max(values, axis=1, keepdims=True)
-    exponent = np.exp(shifted)
-    return exponent / exponent.sum(axis=1, keepdims=True)
+def _aligned_probabilities(values: np.ndarray, classes: np.ndarray) -> np.ndarray:
+    probabilities = np.zeros((len(values), 5), dtype=np.float64)
+    probabilities[:, np.asarray(classes, dtype=int)] = values
+    return probabilities
 
 
 def _metric_row(name, fold, metrics, mask, field="variant") -> dict:
