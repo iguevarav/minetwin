@@ -21,6 +21,7 @@ def fit_centralized_candidate(
     train_labels: np.ndarray,
     validation_features: np.ndarray,
     config: TrainingConfig,
+    weighted_loss: bool = True,
 ) -> tuple[np.ndarray, list[dict]]:
     torch = require_torch()
     _seed(config.seed, torch)
@@ -32,12 +33,10 @@ def fit_centralized_candidate(
         train_labels,
         config.epochs,
         config,
-        _class_weights(train_labels, torch),
+        _class_weights(train_labels, torch) if weighted_loss else None,
         config.seed,
     )
-    probabilities = _predict(
-        model, validation_features, config.batch_size, torch
-    )
+    probabilities = _predict(model, validation_features, config.batch_size, torch)
     return probabilities, history
 
 
@@ -45,6 +44,9 @@ def train_learning_regimes(
     cache: Path,
     output: Path,
     config: TrainingConfig | None = None,
+    weighted_loss: bool = True,
+    decision: str = "cost",
+    prior_correction: bool = False,
 ) -> dict:
     effective = config or TrainingConfig()
     torch = require_torch()
@@ -57,7 +59,10 @@ def train_learning_regimes(
     scaler = FederatedStandardScaler.fit(train.features, train.nodes)
     train_features = scaler.transform(train.features)
     validation_features = scaler.transform(validation.features)
-    class_weights = _class_weights(train.labels, torch)
+    if decision not in ("cost", "argmax"):
+        raise ValueError("La regla de decision debe ser cost o argmax.")
+    class_weights = _class_weights(train.labels, torch) if weighted_loss else None
+    correction = _prior_correction(train) if prior_correction else None
     output = Path(output)
     output.mkdir(parents=True, exist_ok=False)
     try:
@@ -89,7 +94,10 @@ def train_learning_regimes(
                 model, validation_features[selected], effective.batch_size, torch
             )
         results["local"] = grouped_classification_metrics(
-            validation.labels, local_probabilities, validation.nodes
+            validation.labels,
+            _correct_probabilities(local_probabilities, correction),
+            validation.nodes,
+            decision,
         )
         centralized = _new_model(architecture, effective.seed, torch)
         training_history["centralized"] = _fit(
@@ -101,9 +109,7 @@ def train_learning_regimes(
             class_weights,
             effective.seed,
         )
-        _save_model(
-            centralized, output / "centralized.pt", architecture, torch
-        )
+        _save_model(centralized, output / "centralized.pt", architecture, torch)
         results["centralized"] = _evaluate(
             centralized,
             validation_features,
@@ -111,6 +117,8 @@ def train_learning_regimes(
             validation.nodes,
             effective.batch_size,
             torch,
+            decision,
+            correction,
         )
         for name, proximal_mu in (("fedavg", 0.0), ("fedprox", effective.proximal_mu)):
             model, history = _federated_fit(
@@ -132,9 +140,16 @@ def train_learning_regimes(
                 validation.nodes,
                 effective.batch_size,
                 torch,
+                decision,
+                correction,
             )
         report = {
-            "config": asdict(effective),
+            "config": {
+                **asdict(effective),
+                "weighted_loss": weighted_loss,
+                "decision": decision,
+                "prior_correction": prior_correction,
+            },
             "torch": version("torch"),
             "features": train_features.shape[1],
             "training_examples": len(train.labels),
@@ -172,6 +187,7 @@ def _federated_fit(
         states = []
         sizes = []
         losses = []
+        client_losses = {}
         for node_index, node in enumerate(node_ids):
             selected = nodes == node
             local = _new_model(architecture, config.seed, torch)
@@ -191,11 +207,13 @@ def _federated_fit(
             size = int(np.sum(selected))
             sizes.append(size)
             losses.append(local_history[-1]["training_loss"] * size)
+            client_losses[str(node)] = local_history[-1]["training_loss"]
         global_model.load_state_dict(_weighted_state(states, sizes, torch))
         history.append(
             {
                 "round": round_index + 1,
                 "training_loss": sum(losses) / sum(sizes),
+                "client_losses": client_losses,
             }
         )
     return global_model, history
@@ -266,9 +284,20 @@ def _predict(model, features, batch_size, torch):
     return np.concatenate(batches)
 
 
-def _evaluate(model, features, labels, nodes, batch_size, torch):
+def _evaluate(
+    model,
+    features,
+    labels,
+    nodes,
+    batch_size,
+    torch,
+    decision,
+    correction,
+):
     probabilities = _predict(model, features, batch_size, torch)
-    return grouped_classification_metrics(labels, probabilities, nodes)
+    return grouped_classification_metrics(
+        labels, _correct_probabilities(probabilities, correction), nodes, decision
+    )
 
 
 def _class_weights(labels, torch):
@@ -277,6 +306,41 @@ def _class_weights(labels, torch):
         raise ValueError("Entrenamiento requiere ejemplos de las cinco clases.")
     weights = np.sqrt(len(labels) / (5 * counts))
     return torch.from_numpy(weights.astype(np.float32))
+
+
+def prior_correction_for_train(cached: CachedSplit) -> tuple[np.ndarray, np.ndarray]:
+    return _prior_correction(cached)
+
+
+def correct_probabilities(
+    probabilities: np.ndarray, correction: tuple[np.ndarray, np.ndarray] | None
+) -> np.ndarray:
+    return _correct_probabilities(probabilities, correction)
+
+
+def _prior_correction(cached: CachedSplit) -> tuple[np.ndarray, np.ndarray]:
+    training_prior = np.bincount(cached.labels, minlength=5) / len(cached.labels)
+    indexes = _last_vehicle_indexes(cached.vehicle_ids)
+    deployment_prior = np.bincount(cached.labels[indexes], minlength=5)
+    deployment_prior = deployment_prior / deployment_prior.sum()
+    return training_prior, deployment_prior
+
+
+def _last_vehicle_indexes(vehicle_ids: np.ndarray) -> np.ndarray:
+    positions = {}
+    for index, vehicle_id in enumerate(vehicle_ids):
+        positions[str(vehicle_id)] = index
+    return np.asarray(list(positions.values()), dtype=np.int64)
+
+
+def _correct_probabilities(
+    probabilities: np.ndarray, correction: tuple[np.ndarray, np.ndarray] | None
+) -> np.ndarray:
+    if correction is None:
+        return probabilities
+    training_prior, deployment_prior = correction
+    adjusted = probabilities * deployment_prior / training_prior
+    return adjusted / adjusted.sum(axis=1, keepdims=True)
 
 
 def _save_model(model, path, architecture, torch):

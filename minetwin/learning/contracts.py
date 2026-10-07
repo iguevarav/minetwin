@@ -36,9 +36,7 @@ class TrainingConfig:
         }
         if any(type(value) is not int or value < 1 for value in integers.values()):
             raise ValueError("Epocas, rondas y batch_size deben ser positivos.")
-        if not self.hidden_sizes or any(
-            type(size) is not int or size < 1 for size in self.hidden_sizes
-        ):
+        if any(type(size) is not int or size < 1 for size in self.hidden_sizes):
             raise ValueError("hidden_sizes debe contener enteros positivos.")
         for name, value in (
             ("learning_rate", self.learning_rate),
