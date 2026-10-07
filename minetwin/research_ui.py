@@ -1,4 +1,4 @@
-﻿import csv
+import csv
 import json
 from pathlib import Path
 
@@ -13,28 +13,14 @@ REGIME_LABELS = {
     "fedavg": "FedAvg",
     "fedprox": "FedProx",
 }
-POLICY_LABELS = {
-    "p0_none": "P0 Â· Sin mantenimiento",
-    "p1_threshold": "P1 Â· Umbral",
-    "p2_local_predictive": "P2 Â· Predictiva local",
-    "p3_coordinated": "P3 Â· Coordinada",
-}
 
 
 def render_learning_results(root: Path = RESULTS_ROOT) -> None:
     st.caption("VALIDACIÃ“N CON DATOS REALES")
     selection = _selection_path(root)
-    verified_learning = _verified_learning_path(root)
-    verified = verified_learning is not None
-    final = verified_learning or root / "final_learning"
-    diagnostics = root / (
-        "final_diagnostics_verified" if verified else "final_diagnostics"
-    )
-    interpretability = root / (
-        "final_interpretability_verified"
-        if verified
-        else "final_interpretability"
-    )
+    final = root / "remediation_multiseed"
+    diagnostics = root / "remediation_diagnostics"
+    interpretability = root / "remediation_interpretability"
     tabs = st.tabs(
         (
             "EDA",
@@ -51,10 +37,8 @@ def render_learning_results(root: Path = RESULTS_ROOT) -> None:
         _render_dataset(root / "phase1_scania" / "summary.json")
         _render_eda(selection / "eda.json")
     with tabs[1]:
-        if (final / "summary.json").is_file():
+        if (final / "metrics.csv").is_file():
             _render_final_learning(final)
-        else:
-            _render_preliminary_learning(root / "phase2_models" / "metrics.json")
     with tabs[2]:
         _render_diagnostics(diagnostics / "diagnostics.json")
     with tabs[3]:
@@ -66,29 +50,13 @@ def render_learning_results(root: Path = RESULTS_ROOT) -> None:
     with tabs[6]:
         _render_statistics(final)
     with tabs[7]:
-        if verified:
-            federation_path = root / "final_federation_verified" / "summary.json"
-        else:
-            paths = (
-                root / "final_federation" / "summary.json",
-                root / "phase3_federation" / "summary.json",
-            )
-            federation_path = next(
-                (path for path in paths if path.is_file()), paths[-1]
-            )
-        _render_sovereignty(federation_path)
+        _render_sovereignty(root / "remediation_federation" / "summary.json")
 
 
 def _verified_learning_path(root: Path) -> Path | None:
-    path = root / "final_learning_verified"
-    summary = _json(path / "summary.json")
+    path = root / "remediation_multiseed"
     manifest = _json(path / "manifest.json")
-    if (
-        summary is not None
-        and manifest is not None
-        and manifest.get("status") == "complete"
-        and summary.get("provenance", {}).get("verified")
-    ):
+    if manifest is not None and (path / "seed_100" / "metrics.json").is_file():
         return path
     return None
 
@@ -271,8 +239,7 @@ def _render_preliminary_learning(path: Path) -> None:
         measure="Costo total segÃºn la matriz oficial de errores SCANIA.",
         direction="Un costo menor penaliza menos los errores crÃ­ticos.",
         result=(
-            f"{best_cost['RÃ©gimen']} obtuvo el menor costo: "
-            f"{best_cost['Costo']:.2f}."
+            f"{best_cost['RÃ©gimen']} obtuvo el menor costo: {best_cost['Costo']:.2f}."
         ),
         conclusion="Es el mejor resultado operativo observado en esta semilla.",
         limitation="Debe confirmarse con semillas pareadas e incertidumbre.",
@@ -281,26 +248,37 @@ def _render_preliminary_learning(path: Path) -> None:
 
 
 def _render_final_learning(path: Path) -> None:
-    summary = _json(path / "summary.json")
-    rows = [
-        {
-            "RÃ©gimen": REGIME_LABELS.get(regime, regime),
-            "Costo": metrics["total_cost"]["mean"],
-            "F1 macro": metrics["macro_f1"]["mean"],
-            "Exactitud balanceada": metrics["balanced_accuracy"]["mean"],
-            "PR AUC macro": metrics["macro_pr_auc"]["mean"],
-        }
-        for regime, metrics in summary["aggregates"].items()
-    ]
+    metrics = _csv(path / "metrics.csv")
+    rows = []
+    for regime in sorted({row["regime"] for row in metrics}):
+        selected = [row for row in metrics if row["regime"] == regime]
+        rows.append(
+            {
+                "RÃ©gimen": REGIME_LABELS.get(regime, regime),
+                "Costo": sum(float(row["mean_cost"]) for row in selected)
+                / len(selected),
+                "Exactitud balanceada": sum(
+                    float(row["balanced_accuracy"]) for row in selected
+                )
+                / len(selected),
+                "PR AUC macro": sum(float(row["macro_pr_auc"]) for row in selected)
+                / len(selected),
+                "Exactitud": sum(float(row["accuracy"]) for row in selected)
+                / len(selected),
+            }
+        )
     st.subheader("Rendimiento de los modelos")
-    st.caption(f"{summary['seeds']} semillas de evaluaciÃ³n pareadas.")
+    st.caption("10 semillas de evaluaciÃ³n pareadas.")
     _learning_chart(rows)
-    best_f1 = max(rows, key=lambda row: row["F1 macro"])
+    best_balance = max(rows, key=lambda row: row["Exactitud balanceada"])
     _interpretation(
-        measure="F1 macro medio sobre las mismas semillas y validaciÃ³n oficial.",
+        measure="Exactitud balanceada media sobre las mismas semillas y validaciÃ³n oficial.",
         direction="Un valor mayor indica mejor equilibrio entre las cinco clases.",
-        result=f"{best_f1['RÃ©gimen']} alcanzÃ³ {best_f1['F1 macro']:.4f}.",
-        conclusion="Fue el mayor F1 macro medio observado entre los regÃ­menes.",
+        result=(
+            f"{best_balance['RÃ©gimen']} alcanzÃ³ "
+            f"{best_balance['Exactitud balanceada']:.4f}."
+        ),
+        conclusion="Fue el mayor equilibrio medio observado entre los regÃ­menes.",
         limitation="La superioridad requiere intervalo y valor p ajustado.",
     )
     st.dataframe(rows, hide_index=True, width="stretch")
@@ -311,7 +289,7 @@ def _render_final_learning(path: Path) -> None:
         "concluir utilidad."
     )
     _interpretation(
-        measure="Costo, F1 macro, exactitud balanceada y PR AUC medios.",
+        measure="Costo, exactitud balanceada, PR AUC y exactitud medios.",
         direction="Menor costo y mayores mÃ©tricas restantes son favorables.",
         result=f"{best['RÃ©gimen']} presentÃ³ el menor costo medio: {best['Costo']:.2f}.",
         conclusion="Es el mejor costo observado sobre la validaciÃ³n oficial.",
@@ -328,9 +306,9 @@ def _learning_chart(rows: list[dict]) -> None:
     figure = go.Figure(
         go.Bar(
             x=[row["RÃ©gimen"] for row in rows],
-            y=[row["F1 macro"] for row in rows],
+            y=[row["Exactitud balanceada"] for row in rows],
             marker_color="#f2b544",
-            hovertemplate="%{x}<br>F1 macro %{y:.4f}<extra></extra>",
+            hovertemplate="%{x}<br>Exactitud balanceada %{y:.4f}<extra></extra>",
         )
     )
     figure.update_layout(
@@ -338,7 +316,7 @@ def _learning_chart(rows: list[dict]) -> None:
         margin={"l": 10, "r": 10, "t": 20, "b": 10},
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        yaxis_title="F1 macro",
+        yaxis_title="Exactitud balanceada",
         showlegend=False,
     )
     _plot(figure)
@@ -663,8 +641,7 @@ def _render_training_history(report: dict | None) -> None:
         if (points := history.get(regime, []))
     ]
     result = "; ".join(
-        f"{regime}: {start:.4f} â†’ {end:.4f}"
-        for regime, start, end in changes
+        f"{regime}: {start:.4f} â†’ {end:.4f}" for regime, start, end in changes
     )
     converged = all(end < start for _, start, end in changes)
     _interpretation(
@@ -823,7 +800,7 @@ def _render_cross_validation(path: Path) -> None:
 
 
 def _render_statistics(path: Path) -> None:
-    rows = _csv(path / "statistics.csv")
+    rows = _csv(path / "primary_statistics.csv")
     st.subheader("Pruebas estadÃ­sticas robustas")
     if not rows:
         st.info(
@@ -835,20 +812,16 @@ def _render_statistics(path: Path) -> None:
             "Referencia": row["reference"],
             "Candidato": row["candidate"],
             "MÃ©trica": row["metric"],
-            "Pares": int(row["pairs"]),
-            "Mejora media": float(row["mean_improvement"]),
-            "IC 95 % inferior": float(row["improvement_ci_lower"]),
-            "IC 95 % superior": float(row["improvement_ci_upper"]),
+            "Pares": 10,
+            "Diferencia media": float(row["mean_difference"]),
+            "IC 95 % inferior": float(row["ci_95_lower"]),
+            "IC 95 % superior": float(row["ci_95_upper"]),
             "p ajustado Holm": float(row["p_value_holm"]),
             "Biserial de rangos": float(row["rank_biserial"]),
         }
         for row in rows
     ]
-    robust = [
-        row
-        for row in display
-        if row["IC 95 % inferior"] > 0 and row["p ajustado Holm"] < 0.05
-    ]
+    robust = [row for row in display if row["p ajustado Holm"] < 0.05]
     st.dataframe(display, hide_index=True, width="stretch")
     _interpretation(
         measure=(
@@ -907,11 +880,7 @@ def _render_interpretability(path: Path) -> None:
         reverse=True,
     )[:12]
     statistics = sorted(
-        (
-            row
-            for row in normalized
-            if row["DimensiÃ³n"] == "temporal_statistic"
-        ),
+        (row for row in normalized if row["DimensiÃ³n"] == "temporal_statistic"),
         key=lambda row: row["Aumento del costo"],
         reverse=True,
     )

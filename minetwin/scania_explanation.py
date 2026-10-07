@@ -25,8 +25,8 @@ class ScaniaExplanationSource:
     def __init__(
         self,
         cache: Path = RESULTS_ROOT / "phase2_cache",
-        models: Path = RESULTS_ROOT / "final_learning_verified" / "seed_100",
-        publication: Path = RESULTS_ROOT / "final_federation_verified",
+        models: Path = RESULTS_ROOT / "remediation_multiseed" / "seed_100",
+        publication: Path = RESULTS_ROOT / "remediation_federation",
     ) -> None:
         cache = Path(cache)
         models = Path(models)

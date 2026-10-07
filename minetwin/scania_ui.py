@@ -26,17 +26,8 @@ EDA_PATHS = (
     result_path("final_selection", "eda.json"),
     result_path("model_selection", "eda.json"),
 )
-FEDERATION_PATHS = (
-    result_path("final_federation_verified", "summary.json"),
-    result_path("final_federation", "summary.json"),
-    result_path("final_federation_preselection", "summary.json"),
-    result_path("phase3_federation", "summary.json"),
-)
-MODEL_ROOTS = (
-    result_path("final_learning_verified", "seed_100"),
-    result_path("final_learning", "seed_100"),
-    result_path("phase2_models"),
-)
+FEDERATION_PATHS = (result_path("remediation_federation", "summary.json"),)
+MODEL_ROOTS = (result_path("remediation_multiseed", "seed_100"),)
 VIEWS = (
     "Dashboard",
     "Datos y EDA",
@@ -279,9 +270,7 @@ def _render_eda(store: ScaniaReplayStore, split: DatasetSplit) -> None:
     left, right = st.columns(2, gap="large")
     with left:
         st.subheader("Vehículos por partición")
-        nodes = {
-            node: len(store.vehicles(split, node)) for node in store.nodes(split)
-        }
+        nodes = {node: len(store.vehicles(split, node)) for node in store.nodes(split)}
         _bar_chart(nodes, "Partición", "Vehículos")
         _evidence(
             split,
@@ -292,8 +281,7 @@ def _render_eda(store: ScaniaReplayStore, split: DatasetSplit) -> None:
     with right:
         st.subheader("Ausencia por split")
         missing = {
-            row["split"]: row["missing_values"]
-            / (row["readouts"] * row["features"])
+            row["split"]: row["missing_values"] / (row["readouts"] * row["features"])
             for row in summary["splits"]
         }
         _bar_chart(missing, "Split", "Proporción ausente", percent=True)
@@ -538,12 +526,7 @@ def _risk_status(assessment: RiskAssessment) -> None:
 
 
 def _render_federation(active_split: DatasetSplit) -> None:
-    paths = (
-        FEDERATION_PATHS[:1]
-        if (MODEL_ROOTS[0] / "scaler.npz").is_file()
-        else FEDERATION_PATHS
-    )
-    data = _first_json(paths)
+    data = _first_json(FEDERATION_PATHS)
     if data is None:
         st.warning("No existe una publicación federada para mostrar.")
         return
@@ -573,9 +556,7 @@ def _render_federation(active_split: DatasetSplit) -> None:
     columns[1].metric("Variables crudas publicadas", data["coordinator_raw_features"])
     columns[2].metric("Registros crudos publicados", transfer["raw_records"])
     columns[3].metric("Mensajes", f"{transfer['messages']:,}")
-    columns[4].metric(
-        "Mensajes medidos y estimados", _bytes(transfer["payload_bytes"])
-    )
+    columns[4].metric("Mensajes medidos y estimados", _bytes(transfer["payload_bytes"]))
     _evidence(
         split,
         data["coordinator_states"],
@@ -615,9 +596,7 @@ def _render_federation(active_split: DatasetSplit) -> None:
                 "Tipo": kind,
                 "Mensajes": values["messages"],
                 "Datos": _bytes(values["payload_bytes"]),
-                "Cálculo": (
-                    "Serializado" if kind == "published_state" else "Estimado"
-                ),
+                "Cálculo": ("Serializado" if kind == "published_state" else "Estimado"),
             }
             for kind, values in transfer["by_type"].items()
             if values["messages"]

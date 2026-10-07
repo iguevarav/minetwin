@@ -21,7 +21,7 @@ def fit_centralized_candidate(
     train_labels: np.ndarray,
     validation_features: np.ndarray,
     config: TrainingConfig,
-    weighted_loss: bool = True,
+    weighted_loss: bool = False,
 ) -> tuple[np.ndarray, list[dict]]:
     torch = require_torch()
     _seed(config.seed, torch)
@@ -44,7 +44,7 @@ def train_learning_regimes(
     cache: Path,
     output: Path,
     config: TrainingConfig | None = None,
-    weighted_loss: bool = True,
+    weighted_loss: bool = False,
     decision: str = "cost",
     prior_correction: bool = False,
 ) -> dict:
