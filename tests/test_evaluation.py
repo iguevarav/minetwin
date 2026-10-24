@@ -1,4 +1,4 @@
-﻿import csv
+import csv
 import json
 from dataclasses import replace
 
@@ -26,7 +26,7 @@ class ExplanationClient:
         self.calls.append(observation)
         return (
             f"Clase estimada: {observation.state.risk.predicted_class}. "
-            "La explicaciÃ³n se limita a la evidencia proporcionada."
+            "La explicación se limita a la evidencia proporcionada."
         )
 
 

@@ -24,6 +24,7 @@ class LearningExample:
     vehicle_id: str
     node_id: str
     label: int
+    time_step: float
     values: np.ndarray
 
 
@@ -34,6 +35,7 @@ class CachedSplit:
     nodes: np.ndarray
     vehicle_ids: np.ndarray
     feature_names: tuple[str, ...]
+    time_steps: np.ndarray | None = None
 
     @classmethod
     def load(cls, path: Path) -> "CachedSplit":
@@ -44,6 +46,11 @@ class CachedSplit:
                 nodes=source["nodes"],
                 vehicle_ids=source["vehicle_ids"],
                 feature_names=tuple(source["feature_names"].tolist()),
+                time_steps=(
+                    source["time_steps"]
+                    if "time_steps" in source.files
+                    else np.full(len(source["labels"]), np.nan)
+                ),
             )
 
 
@@ -53,8 +60,12 @@ class WindowVectorizer:
     def __init__(self, config: FeatureConfig | None = None) -> None:
         self.config = config or FeatureConfig()
 
+    @property
+    def schema_version(self) -> int:
+        return 2 if self.config.usage_features else 1
+
     def feature_names(self, source_names: tuple[str, ...]) -> tuple[str, ...]:
-        return (
+        names = (
             *(
                 f"{name}__{statistic}"
                 for statistic in self.STATISTICS
@@ -62,6 +73,21 @@ class WindowVectorizer:
             ),
             "window__observations",
             "window__elapsed",
+        )
+        if not self.config.usage_features:
+            return names
+        families = _indexed_families(source_names)
+        return (
+            *names,
+            *(f"{name}__increment" for name in source_names),
+            *(
+                f"{source_names[index]}__increment_share"
+                for _, indexes in families
+                for index in indexes
+            ),
+            *(f"family_{name}__increment_total" for name, _ in families),
+            *(f"family_{name}__zero_increment" for name, _ in families),
+            *(f"family_{name}__decrease" for name, _ in families),
         )
 
     def transform(self, window: FeatureWindow) -> np.ndarray:
@@ -76,16 +102,46 @@ class WindowVectorizer:
             (values[-1] - values[0]) / duration,
         )
         if self.config.signed_log:
-            statistics = tuple(
-                np.sign(item) * np.log1p(np.abs(item)) for item in statistics
-            )
-        return np.concatenate(
+            statistics = tuple(_signed_log(item) for item in statistics)
+        result = np.concatenate(
             (
                 *statistics,
                 missing.mean(axis=0),
                 np.asarray((np.log1p(len(values)), np.log1p(elapsed))),
             )
-        ).astype(np.float32)
+        )
+        if self.config.usage_features:
+            result = np.concatenate(
+                (result, self._usage_features(values, window.feature_names))
+            )
+        return result.astype(np.float32)
+
+    def _usage_features(
+        self, values: np.ndarray, source_names: tuple[str, ...]
+    ) -> np.ndarray:
+        increments = values[-1] - values[0]
+        encoded = _signed_log(increments) if self.config.signed_log else increments
+        shares = []
+        totals = []
+        zeros = []
+        decreases = []
+        for _, indexes in _indexed_families(source_names):
+            family = increments[np.asarray(indexes)]
+            positive = np.maximum(family, 0.0)
+            total = float(positive.sum())
+            shares.append(positive / total if total else np.zeros(len(family)))
+            totals.append(np.log1p(total) if self.config.signed_log else total)
+            zeros.append(float(total == 0.0))
+            decreases.append(float(np.any(family < 0.0)))
+        return np.concatenate(
+            (
+                encoded,
+                *shares,
+                np.asarray(totals),
+                np.asarray(zeros),
+                np.asarray(decreases),
+            )
+        )
 
 
 def prepare_learning_cache(
@@ -118,6 +174,9 @@ def prepare_learning_cache(
                 labels=np.asarray([item.label for item in examples], dtype=np.int8),
                 nodes=np.asarray([item.node_id for item in examples]),
                 vehicle_ids=np.asarray([item.vehicle_id for item in examples]),
+                time_steps=np.asarray(
+                    [item.time_step for item in examples], dtype=np.float64
+                ),
                 feature_names=np.asarray(feature_names),
             )
             labels = np.asarray([item.label for item in examples])
@@ -138,6 +197,12 @@ def prepare_learning_cache(
             )
         metadata = {
             "feature_config": asdict(effective),
+            "feature_schema_version": vectorizer.schema_version,
+            "usage_feature_families": [
+                name for name, _ in _indexed_families(dataset.schema.feature_names)
+            ]
+            if effective.usage_features
+            else [],
             "partition_config": asdict(partitioner),
             "source_manifest": str(
                 (phase_one_output / "dataset_manifest.json").resolve()
@@ -212,6 +277,7 @@ def _selected_examples(
             vehicle_id=window.vehicle_id,
             node_id=window.node_id,
             label=label,
+            time_step=window.end_time_step,
             values=vectorizer.transform(window),
         )
 
@@ -223,3 +289,22 @@ def _partitioner(path: Path) -> CategoricalNodePartitioner:
         concentration=payload["concentration"],
         seed=payload["seed"],
     )
+
+
+def _indexed_families(
+    source_names: tuple[str, ...],
+) -> tuple[tuple[str, tuple[int, ...]], ...]:
+    families: dict[str, list[int]] = {}
+    for index, name in enumerate(source_names):
+        prefix, separator, suffix = name.rpartition("_")
+        if separator and prefix and suffix.isdigit():
+            families.setdefault(prefix, []).append(index)
+    return tuple(
+        (name, tuple(indexes))
+        for name, indexes in families.items()
+        if len(indexes) > 1
+    )
+
+
+def _signed_log(values: np.ndarray) -> np.ndarray:
+    return np.sign(values) * np.log1p(np.abs(values))

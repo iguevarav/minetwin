@@ -1,3 +1,4 @@
+import csv
 import json
 from pathlib import Path
 
@@ -12,12 +13,19 @@ from minetwin.data.scania import (
     ScaniaReplayStore,
     ScaniaReplayView,
 )
+from minetwin.explanations import describe
+from minetwin.exports import Explanation
 from minetwin.learning import FeatureConfig, WindowVectorizer
 from minetwin.learning.inference import TorchRiskPrognosticator
+from minetwin.learning.metrics import expected_decision_costs
 from minetwin.learning.provenance import verify_training_provenance
 from minetwin.paths import DATASET_ROOT, RESULTS_ROOT, result_path
+from minetwin.presentation_ui import render_plot, render_table
 from minetwin.publication import PublishedCondition, RiskAssessment
+from minetwin.report_ui import render_article_report
 from minetwin.research_ui import render_learning_results
+from minetwin.scania_explanation import ScaniaExplanationSource
+from minetwin.views.feria import render_feria
 
 REPLAY_INDEX = result_path("02_reproduccion", "index.json")
 PHASE_ONE_SUMMARY = result_path("01_datos", "summary.json")
@@ -25,11 +33,15 @@ LEARNING_METADATA = result_path("03_cache", "metadata.json")
 EDA_PATHS = (result_path("04_seleccion_modelo", "eda.json"),)
 FEDERATION_PATHS = (result_path("07_federacion", "summary.json"),)
 MODEL_ROOTS = (result_path("06_aprendizaje", "seed_100"),)
+DEMONSTRATION_CASES = result_path("11_mejora", "07_demostracion", "demo_cases.csv")
+DEMONSTRATION_MANIFEST = result_path("11_mejora", "07_demostracion", "manifest.json")
 VIEWS = (
+    "Demo feria",
     "Dashboard",
     "Datos y EDA",
     "Telemetría",
     "Riesgo predictivo",
+    "Resultados del artículo",
     "Aprendizaje",
     "Federación",
     "Asistente",
@@ -48,6 +60,10 @@ CONDITION_LABELS = {
 }
 
 
+class PublishedRiskUnavailableError(OSError):
+    pass
+
+
 @st.cache_resource
 def _store(dataset_root: str, index: str) -> ScaniaReplayStore:
     return ScaniaReplayStore(Path(dataset_root), Path(index))
@@ -58,14 +74,27 @@ def _predictor(model: str, scaler: str) -> TorchRiskPrognosticator:
     return TorchRiskPrognosticator.load(Path(model), Path(scaler))
 
 
+@st.cache_resource
+def _published_risk_source() -> ScaniaExplanationSource:
+    return ScaniaExplanationSource()
+
+
 def render_scania() -> None:
-    st.html('<div class="mt-eyebrow">DATOS REALES / SCANIA COMPONENT X</div>')
-    st.title("MineTwin · Análisis histórico de Component X")
+    if st.session_state.get("scania_navigation") == "Demo feria":
+        render_feria()
+        return
     if not REPLAY_INDEX.is_file():
+        st.html('<div class="mt-eyebrow">DATOS REALES / SCANIA COMPONENT X</div>')
+        st.title("MineTwin · Análisis histórico de Component X")
         _render_pending_index()
         return
     store = _store(str(DATASET_ROOT), str(REPLAY_INDEX))
     view_name, split, node_id, vehicle_id, regime = _sidebar(store)
+    if view_name == "Demo feria":
+        render_feria()
+        return
+    st.html('<div class="mt-eyebrow">DATOS REALES / SCANIA COMPONENT X</div>')
+    st.title("MineTwin · Análisis histórico de Component X")
     st.caption(
         f"{view_name} · Split {split.value} · Partición {node_id} · "
         "Fuente SCANIA Component X"
@@ -81,7 +110,9 @@ def render_scania() -> None:
     elif view_name == "Riesgo predictivo":
         session = _session(store, split, vehicle_id)
         _render_replay_controls(session)
-        _render_risk(session.view, regime)
+        _render_risk(session, regime)
+    elif view_name == "Resultados del artículo":
+        render_article_report(RESULTS_ROOT)
     elif view_name == "Aprendizaje":
         render_learning_results(RESULTS_ROOT)
     elif view_name == "Asistente":
@@ -234,7 +265,13 @@ def _render_dashboard(
         },
         {"Elemento": "Naturaleza", "Valor": "Datos reales y resultados derivados"},
     ]
-    st.dataframe(context, hide_index=True, width="stretch")
+    render_table(
+        context,
+        hide_index=True,
+        width="stretch",
+        explanation=describe("context", "Contexto activo"),
+        key="scania_ui_render_dashboard0",
+    )
     _evidence(split, len(vehicles), "mixto", "No contiene variables simuladas.")
 
 
@@ -295,7 +332,13 @@ def _render_eda(store: ScaniaReplayStore, split: DatasetSplit) -> None:
         {"Clase": label, "Ventana hasta reparación": description}
         for label, description in CLASS_LABELS.items()
     ]
-    st.dataframe(class_rows, hide_index=True, width="stretch")
+    render_table(
+        class_rows,
+        hide_index=True,
+        width="stretch",
+        explanation=describe("class_definitions", "Significado de las clases"),
+        key="scania_ui_render_eda0",
+    )
     _evidence(
         split,
         "No aplica",
@@ -314,7 +357,15 @@ def _render_eda(store: ScaniaReplayStore, split: DatasetSplit) -> None:
         }
         for item in features[:10]
     ]
-    st.dataframe(rows, hide_index=True, width="stretch")
+    render_table(
+        rows,
+        hide_index=True,
+        width="stretch",
+        explanation=describe(
+            "separation", "Variables con mayor separación descriptiva"
+        ),
+        key="scania_ui_render_eda1",
+    )
     train = _learning_split(metadata, DatasetSplit.TRAIN)
     _evidence(
         DatasetSplit.TRAIN,
@@ -391,7 +442,7 @@ def _render_telemetry(view: ScaniaReplayView) -> None:
             yaxis_title="Valor observado",
             legend_orientation="h",
         )
-        _plot(figure)
+        _plot(figure, describe("telemetry", "Historia de las variables seleccionadas"))
         _evidence(
             view.split,
             len(view.history),
@@ -410,7 +461,13 @@ def _render_telemetry(view: ScaniaReplayView) -> None:
         )
     ]
     with st.expander("Variables del readout", expanded=False):
-        st.dataframe(rows, hide_index=True, width="stretch")
+        render_table(
+            rows,
+            hide_index=True,
+            width="stretch",
+            explanation=describe("telemetry", "Variables del readout actual"),
+            key="scania_ui_render_telemetry0",
+        )
         _evidence(
             view.split,
             1,
@@ -435,14 +492,37 @@ def _render_window(view: ScaniaReplayView) -> None:
     )
 
 
-def _render_risk(view: ScaniaReplayView, regime: str) -> None:
+def _render_risk(session: ScaniaReplaySession, regime: str) -> None:
+    assessment_tab, demonstration_tab = st.tabs(
+        ("Evaluación puntual", "Demostración de prioridad")
+    )
+    with assessment_tab:
+        _render_live_risk(session, regime)
+    with demonstration_tab:
+        _render_priority_demonstration()
+
+
+def _render_live_risk(session: ScaniaReplaySession, regime: str) -> None:
+    view = session.view
     st.subheader("Estimación de riesgo de Component X")
     try:
         assessment, model_root, feature_count = _assessment(view, regime)
+    except PublishedRiskUnavailableError as error:
+        st.info(str(error))
+        st.button(
+            "Ir al último readout publicado",
+            on_click=session.advance,
+            args=(session.readout_count,),
+            key="scania_published_risk",
+            type="primary",
+        )
+        _render_window(view)
+        return
     except (OSError, ValueError, RuntimeError) as error:
         st.warning(f"Estado no estimable: {error}")
         _render_window(view)
         return
+    most_likely, highest_probability, decision_costs = _risk_decision(assessment)
     _risk_status(assessment)
     if view.split == DatasetSplit.TRAIN:
         st.caption(
@@ -452,17 +532,55 @@ def _render_risk(view: ScaniaReplayView, regime: str) -> None:
     missing = sum(sum(row) for row in view.window.missing)
     cells = len(view.window.values) * len(view.window.feature_names)
     columns = st.columns(5)
-    columns[0].metric("Clase predicha", assessment.predicted_class)
-    columns[1].metric("Estado", CONDITION_LABELS[assessment.condition])
-    columns[2].metric("Confianza máxima", f"{max(assessment.probabilities):.2%}")
+    columns[0].metric(
+        "Clase más probable",
+        f"{most_likely} ({highest_probability:.2%})",
+    )
+    columns[1].metric(
+        "Decisión publicada por costo",
+        f"Clase {assessment.predicted_class}",
+    )
+    columns[2].metric(
+        "Costo esperado publicado",
+        f"{decision_costs[assessment.predicted_class]:.4f}",
+    )
     columns[3].metric("Observaciones", len(view.window.values))
     columns[4].metric("Ausencia original", f"{missing / cells:.2%}")
-    st.info(assessment.recommendation)
+    st.info(_risk_recommendation(assessment, most_likely, highest_probability))
     probabilities = {
         f"Clase {label}": probability
         for label, probability in enumerate(assessment.probabilities)
     }
-    _bar_chart(probabilities, "Clase", "Probabilidad", percent=True)
+    source = (
+        f"SCANIA Component X · {view.split.value} · vehículo {view.vehicle_id} · "
+        f"paso {view.current.time_step:g} · modelo {assessment.model_id}"
+    )
+    _bar_chart(
+        probabilities,
+        "Clase",
+        "Probabilidad",
+        percent=True,
+        explanation=describe(
+            "probabilities", "Probabilidades de la evaluación puntual", source=source
+        ),
+    )
+    st.subheader("Costo esperado por decisión publicada")
+    render_table(
+        [
+            {
+                "Decisión": f"Clase {label}",
+                "Costo esperado": float(cost),
+                "Publicada": "Sí" if label == assessment.predicted_class else "",
+            }
+            for label, cost in enumerate(decision_costs)
+        ],
+        hide_index=True,
+        width="stretch",
+        explanation=describe(
+            "decision_cost", "Costo esperado por decisión publicada", source=source
+        ),
+        key="scania_ui_render_live_risk0",
+    )
     _evidence(
         view.split,
         len(view.window.values),
@@ -471,24 +589,173 @@ def _render_risk(view: ScaniaReplayView, regime: str) -> None:
         "del modelo.",
     )
     evidence = [
-        {"Evidencia": "Vehículo", "Valor": view.vehicle_id},
-        {"Evidencia": "Partición", "Valor": view.node_id},
-        {"Evidencia": "Último paso observado", "Valor": view.current.time_step},
-        {"Evidencia": "Variables derivadas", "Valor": feature_count},
-        {"Evidencia": "Régimen", "Valor": REGIMES[regime]},
-        {"Evidencia": "Modelo", "Valor": assessment.model_id},
-        {"Evidencia": "Artefacto", "Valor": model_root.name},
+        {"Evidencia": "Vehículo", "Valor": str(view.vehicle_id)},
+        {"Evidencia": "Partición", "Valor": str(view.node_id)},
+        {"Evidencia": "Último paso observado", "Valor": f"{view.current.time_step:g}"},
+        {"Evidencia": "Variables derivadas", "Valor": str(feature_count)},
+        {"Evidencia": "Régimen", "Valor": str(REGIMES[regime])},
+        {"Evidencia": "Modelo", "Valor": str(assessment.model_id)},
+        {"Evidencia": "Artefacto", "Valor": str(model_root.name)},
+        {"Evidencia": "Semilla", "Valor": str(_seed(model_root))},
         {
             "Evidencia": "Etiqueta retrospectiva",
-            "Valor": _class_label(view.observed_class),
+            "Valor": str(_class_label(view.observed_class)),
         },
     ]
-    st.dataframe(evidence, hide_index=True, width="stretch")
+    render_table(
+        evidence,
+        hide_index=True,
+        width="stretch",
+        explanation=describe(
+            "context", "Evidencia de la predicción activa", source=source
+        ),
+        key="scania_ui_render_live_risk1",
+    )
     _evidence(
         view.split,
         1,
         "derivado",
         "No ejecuta reparaciones ni atribuye una pieza física a Component X.",
+    )
+
+
+def _render_priority_demonstration() -> None:
+    rows = _read_csv(DEMONSTRATION_CASES)
+    manifest = _read_json(DEMONSTRATION_MANIFEST)
+    if not rows or manifest is None:
+        st.info(
+            "La demostración se habilita al generar ejemplos estratificados "
+            "con predicciones fuera de fold."
+        )
+        return
+    st.subheader("Cola de prioridad demostrativa")
+    st.caption(
+        "Ejemplos SCANIA reales de train con predicciones fuera de fold. "
+        "No representan una evaluación final ni una orden de mantenimiento."
+    )
+    case = rows[
+        st.selectbox(
+            "Ejemplo",
+            range(len(rows)),
+            format_func=lambda index: _case_label(rows[index]),
+            key="priority_demonstration_case",
+        )
+    ]
+    selected = case["selected"] == "True"
+    columns = st.columns(5)
+    columns[0].metric("Vehículo", case["vehicle_id"])
+    columns[1].metric("Ventana causal", case["window_observations"])
+    columns[2].metric(
+        "Clase más probable",
+        f"{case['most_likely_class']} ({float(case['maximum_probability']):.2%})",
+    )
+    columns[3].metric("Prioridad", "Sí" if selected else "No")
+    columns[4].metric(
+        "Costo esperado publicado",
+        f"{float(case['published_expected_cost']):.4f}",
+    )
+    if selected:
+        st.warning(
+            "Revisión humana prioritaria: el caso entra en la capacidad fijada "
+            "por la política. No confirma una falla ni activa mantenimiento."
+        )
+    else:
+        st.info(
+            "No priorizado en la capacidad fijada. La evaluación humana sigue "
+            "siendo necesaria para interpretar cualquier señal de riesgo."
+        )
+    probabilities = {
+        f"Clase {label}": float(case[f"probability_{label}"]) for label in range(5)
+    }
+    source = (
+        f"SCANIA Component X · train fuera de fold · vehículo {case['vehicle_id']} · "
+        f"fold {case['fold']} · paso {case['time_step']} · {DEMONSTRATION_CASES.name}"
+    )
+    _bar_chart(
+        probabilities,
+        "Clase",
+        "Probabilidad calibrada",
+        percent=True,
+        explanation=describe(
+            "probabilities",
+            "Probabilidades calibradas del ejemplo prioritario",
+            source=source,
+        ),
+    )
+    st.subheader("Costo esperado por decisión")
+    render_table(
+        [
+            {
+                "Decisión": f"Clase {label}",
+                "Costo esperado": float(case[f"expected_cost_{label}"]),
+                "Publicada": "Sí" if label == int(case["published_decision"]) else "",
+            }
+            for label in range(5)
+        ],
+        hide_index=True,
+        width="stretch",
+        explanation=describe(
+            "decision_cost", "Costo esperado del ejemplo prioritario", source=source
+        ),
+        key="scania_ui_render_priority_demonstration0",
+    )
+    render_table(
+        [
+            {"Evidencia": "Estrato", "Valor": case["stratum"]},
+            {"Evidencia": "Partición experimental", "Valor": case["node_id"]},
+            {"Evidencia": "Paso temporal", "Valor": case["time_step"]},
+            {"Evidencia": "Etiqueta retrospectiva", "Valor": case["label"]},
+            {"Evidencia": "Fold fuera de fold", "Valor": case["fold"]},
+            {"Evidencia": "Modelo", "Valor": manifest["priority"]["model"]},
+            {"Evidencia": "Semilla", "Valor": manifest["priority"]["seed"]},
+            {
+                "Evidencia": "Capacidad de revisión",
+                "Valor": manifest["priority"]["capacity"],
+            },
+        ],
+        hide_index=True,
+        width="stretch",
+        explanation=describe(
+            "context", "Evidencia del ejemplo fuera de fold", source=source
+        ),
+        key="scania_ui_render_priority_demonstration1",
+    )
+
+
+def _case_label(case: dict[str, str]) -> str:
+    return (
+        f"{case['stratum']} · vehículo {case['vehicle_id']} · "
+        f"paso {float(case['time_step']):g}"
+    )
+
+
+def _risk_decision(assessment: RiskAssessment) -> tuple[int, float, tuple[float, ...]]:
+    probabilities = assessment.probabilities
+    most_likely = max(range(len(probabilities)), key=probabilities.__getitem__)
+    costs = expected_decision_costs([probabilities])[0]
+    return most_likely, probabilities[most_likely], tuple(float(cost) for cost in costs)
+
+
+def _risk_recommendation(
+    assessment: RiskAssessment,
+    most_likely: int,
+    highest_probability: float,
+) -> str:
+    return (
+        "Recomendación: realizar una evaluación humana de Component X. "
+        f"La clase más probable es {most_likely} ({highest_probability:.2%}), "
+        f"mientras que la clase {assessment.predicted_class} se publica porque "
+        "minimiza el costo esperado. La alerta no confirma una falla y la "
+        "probabilidad máxima no es confianza en la decisión publicada."
+    )
+
+
+def _seed(model_root: Path) -> str:
+    prefix = "seed_"
+    return (
+        model_root.name.removeprefix(prefix)
+        if model_root.name.startswith(prefix)
+        else "No disponible"
     )
 
 
@@ -503,12 +770,32 @@ def _assessment(
     if model_root is None:
         raise OSError(f"no existe un modelo {REGIMES[regime]} compatible")
     model_path = _model_path(model_root, regime, view.node_id)
-    predictor = _predictor(str(model_path), str(model_root / "scaler.npz"))
     vectorizer = WindowVectorizer(FeatureConfig(**metadata["feature_config"]))
     features = vectorizer.transform(view.window)
     if len(features) != metadata["feature_count"]:
         raise ValueError("la ventana no coincide con el esquema entrenado")
+    try:
+        predictor = _predictor(str(model_path), str(model_root / "scaler.npz"))
+    except OSError as error:
+        return _published_assessment(view, regime, error), model_root, len(features)
     return predictor.assess(features[None, :])[0], model_root, len(features)
+
+
+def _published_assessment(
+    view: ScaniaReplayView, regime: str, native_error: OSError
+) -> RiskAssessment:
+    try:
+        observation = _published_risk_source().observation(view, regime)
+    except RuntimeError as error:
+        raise PublishedRiskUnavailableError(
+            "No se puede cargar el modelo nativo ni el estado publicado."
+        ) from error
+    if observation.state is None or observation.stale:
+        raise PublishedRiskUnavailableError(
+            "El estado publicado corresponde al último readout de validation "
+            "con FedProx."
+        ) from native_error
+    return observation.state.risk
 
 
 def _risk_status(assessment: RiskAssessment) -> None:
@@ -577,7 +864,13 @@ def _render_federation(active_split: DatasetSplit) -> None:
             }
             for node, values in data["nodes"].items()
         ]
-        st.dataframe(rows, hide_index=True, width="stretch")
+        render_table(
+            rows,
+            hide_index=True,
+            width="stretch",
+            explanation=describe("federation", "Publicación por nodo"),
+            key="scania_ui_render_federation0",
+        )
         _evidence(
             split,
             sum(row["Registros asignados"] for row in rows),
@@ -598,7 +891,13 @@ def _render_federation(active_split: DatasetSplit) -> None:
             for kind, values in transfer["by_type"].items()
             if values["messages"]
         ]
-        st.dataframe(transfer_rows, hide_index=True, width="stretch")
+        render_table(
+            transfer_rows,
+            hide_index=True,
+            width="stretch",
+            explanation=describe("federation", "Transferencia por tipo de mensaje"),
+            key="scania_ui_render_federation1",
+        )
         _evidence(
             split,
             transfer["messages"],
@@ -646,6 +945,7 @@ def _bar_chart(
     x_title: str,
     y_title: str,
     percent: bool = False,
+    explanation: Explanation | None = None,
 ) -> None:
     figure = go.Figure(
         go.Bar(
@@ -664,10 +964,17 @@ def _bar_chart(
         yaxis_tickformat=".1%" if percent else None,
         showlegend=False,
     )
-    _plot(figure)
+    kind = {
+        "Vehículos": "partitions",
+        "Ejemplos causales": "classes",
+        "Proporción ausente": "missing",
+        "Probabilidad": "probabilities",
+        "Probabilidad calibrada": "probabilities",
+    }[y_title]
+    _plot(figure, explanation or describe(kind, f"{y_title} por {x_title.lower()}"))
 
 
-def _plot(figure: go.Figure) -> None:
+def _plot(figure: go.Figure, explanation: Explanation) -> None:
     figure.update_layout(
         template="plotly_white",
         margin={"l": 10, "r": 10, "t": 25, "b": 10},
@@ -677,12 +984,7 @@ def _plot(figure: go.Figure) -> None:
         xaxis_gridcolor="#e1e6ec",
         yaxis_gridcolor="#e1e6ec",
     )
-    st.plotly_chart(
-        figure,
-        width="stretch",
-        theme=None,
-        config={"displayModeBar": False},
-    )
+    render_plot(figure, explanation=explanation)
 
 
 def _evidence(
@@ -741,6 +1043,13 @@ def _read_json(path: Path) -> dict | None:
     if not path.is_file():
         return None
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _read_csv(path: Path) -> list[dict[str, str]]:
+    if not path.is_file():
+        return []
+    with path.open(encoding="utf-8", newline="") as source:
+        return list(csv.DictReader(source))
 
 
 def _class_label(value: int | None) -> str:

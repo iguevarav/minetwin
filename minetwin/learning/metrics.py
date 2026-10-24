@@ -4,13 +4,25 @@ from minetwin.data.scania import SCANIA_COST_MATRIX
 
 
 def cost_sensitive_predictions(probabilities: np.ndarray) -> np.ndarray:
+    return np.argmin(expected_decision_costs(probabilities), axis=1)
+
+
+def expected_decision_costs(probabilities: np.ndarray) -> np.ndarray:
     probabilities = _probabilities(probabilities)
-    return _cost_sensitive_predictions(probabilities)
-
-
-def _cost_sensitive_predictions(probabilities: np.ndarray) -> np.ndarray:
     costs = np.asarray(SCANIA_COST_MATRIX, dtype=np.float64)
-    return np.argmin(probabilities @ costs, axis=1)
+    return probabilities @ costs
+
+
+def class_average_precision(
+    labels: np.ndarray,
+    probabilities: np.ndarray,
+    class_label: int,
+) -> float:
+    probabilities = _probabilities(probabilities)
+    labels = _labels(labels, len(probabilities))
+    if type(class_label) is not int or class_label not in range(5):
+        raise ValueError("La clase debe estar entre cero y cuatro.")
+    return _average_precision(labels == class_label, probabilities[:, class_label])
 
 
 def classification_metrics(
@@ -22,7 +34,7 @@ def classification_metrics(
         raise ValueError("La decisión debe ser cost o argmax.")
     top_class = np.argmax(probabilities, axis=1)
     predictions = (
-        _cost_sensitive_predictions(probabilities) if decision == "cost" else top_class
+        cost_sensitive_predictions(probabilities) if decision == "cost" else top_class
     )
     confusion = np.zeros((5, 5), dtype=np.int64)
     np.add.at(confusion, (labels, predictions), 1)
@@ -126,7 +138,7 @@ def mean_misclassification_cost(
 ) -> float:
     probabilities = _probabilities(probabilities)
     labels = _labels(labels, len(probabilities))
-    predictions = _cost_sensitive_predictions(probabilities)
+    predictions = cost_sensitive_predictions(probabilities)
     costs = np.asarray(SCANIA_COST_MATRIX, dtype=np.float64)
     return float(np.mean(costs[labels, predictions]))
 

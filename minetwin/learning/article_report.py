@@ -1,17 +1,55 @@
 import argparse
 import csv
 import hashlib
+import html
 import json
 import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+from PIL import Image
 
+from minetwin.explanations import describe
+from minetwin.exports import (
+    DPI,
+    Explanation,
+    explained_rows,
+    explanation_html,
+    matplotlib_jpg,
+    table_xlsx,
+)
 from minetwin.learning.data import CachedSplit
 
 REGIMES = ("local", "centralized", "fedavg", "fedprox")
 METRICS = ("mean_cost", "macro_f1", "macro_pr_auc", "balanced_accuracy", "accuracy")
+TABLE_KINDS = {
+    "eda_particiones": "partitions",
+    "eda_clases": "classes",
+    "eda_nodos": "partitions",
+    "eda_eta_cuadrado": "separation",
+    "seleccion_modelo": "selection",
+    "seleccion_variante": "selection",
+    "referencias_cv": "selection",
+    "baselines_validation": "performance",
+    "multisemilla_resumen": "performance",
+    "multisemilla_semillas": "performance",
+    "local_por_nodo": "performance",
+    "estadistica_primaria": "statistics",
+    "estadistica_secundaria": "statistics",
+    "confusion": "confusion",
+    "metricas_por_clase": "class_metrics",
+    "perdidas_cliente_ronda": "training",
+    "importancia_permutacion": "importance",
+}
+FIGURE_TABLES = {
+    "distribucion_clases": "eda_clases",
+    "costo_por_regimen": "multisemilla_resumen",
+    "perdidas_federadas": "perdidas_cliente_ronda",
+    "matrices_confusion": "confusion",
+    "importancia_permutacion": "importancia_permutacion",
+    "seleccion_variante": "seleccion_variante",
+}
 
 
 def main() -> None:
@@ -62,13 +100,63 @@ def build_report(root: Path, output: Path, overwrite: bool = False) -> dict:
     }
     for name, rows in tables.items():
         _write_csv(output / name, rows)
+        (output / name).with_suffix(".xlsx").write_bytes(
+            table_xlsx(rows, _table_explanation(name, rows), parse_numbers=True)
+        )
     provenance = _provenance(paths)
     (output / "procedencia.json").write_text(
         json.dumps(provenance, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     figures = _figures(output, tables)
     _markdown(output / "resultados.md", tables, provenance, figures)
-    return {"output": str(output), "tables": len(tables) + 2, "figures": len(figures)}
+    (output / "report.html").write_text(_html_report(tables, figures), encoding="utf-8")
+    exports = []
+    for figure in figures:
+        with Image.open(figure) as image:
+            exports.append(
+                {
+                    "file": Path(figure).name,
+                    "format": image.format,
+                    "pixels": list(image.size),
+                    "dpi": list(image.info["dpi"]),
+                    "sha256": _sha256(Path(figure)),
+                }
+            )
+    (output / "exportaciones.json").write_text(
+        json.dumps({"dpi": DPI, "figures": exports}, indent=2), encoding="utf-8"
+    )
+    # Remove only the six superseded figures, after all new outputs exist.
+    for figure in figures:
+        Path(figure).with_suffix(".png").unlink(missing_ok=True)
+    return {
+        "output": str(output),
+        "tables": len(tables),
+        "excel": len(tables),
+        "figures": len(figures),
+        "dpi": DPI,
+    }
+
+
+def _table_explanation(name: str, rows: list[dict]) -> Explanation:
+    stem = Path(name).stem
+    explanation = describe(
+        TABLE_KINDS[stem],
+        stem.replace("_", " ").title(),
+        source=f"SCANIA Component X · tabla {stem}.csv; source_file identifica los artefactos cuando está disponible.",
+    )
+    return explained_rows(explanation, rows)
+
+
+def _figure_explanation(stem: str, tables: dict) -> Explanation:
+    table = FIGURE_TABLES[stem]
+    return explained_rows(
+        describe(
+            TABLE_KINDS[table],
+            stem.replace("_", " ").title(),
+            source=f"SCANIA Component X · {table}.csv; ver tabla y procedencia.json.",
+        ),
+        tables[f"{table}.csv"],
+    )
 
 
 def _paths(root: Path) -> dict[str, Path]:
@@ -291,7 +379,7 @@ def _figures(output: Path, tables: dict[str, list[dict]]) -> list[str]:
         )
     axis.set(xlabel="Clase", ylabel="Ejemplos")
     axis.legend()
-    class_path = _save(figure, output / "distribucion_clases.png")
+    class_path = _save(figure, output / "distribucion_clases.jpg", tables)
     rows = [row for row in summary if row["metric"] == "mean_cost"]
     figure, axis = plt.subplots(figsize=(8, 4.5))
     axis.bar(
@@ -301,7 +389,7 @@ def _figures(output: Path, tables: dict[str, list[dict]]) -> list[str]:
         capsize=4,
     )
     axis.set_ylabel("Costo medio SCANIA")
-    cost_path = _save(figure, output / "costo_por_regimen.png")
+    cost_path = _save(figure, output / "costo_por_regimen.jpg", tables)
     figure, axis = plt.subplots(figsize=(8, 4.5))
     for regime in ("fedavg", "fedprox"):
         for node in ("alpha", "beta", "gamma"):
@@ -324,7 +412,7 @@ def _figures(output: Path, tables: dict[str, list[dict]]) -> list[str]:
             axis.plot(rounds, values, label=f"{regime}-{node}")
     axis.set(xlabel="Ronda", ylabel="Pérdida de cliente")
     axis.legend(ncol=2)
-    loss_path = _save(figure, output / "perdidas_federadas.png")
+    loss_path = _save(figure, output / "perdidas_federadas.jpg", tables)
     figure, axes = plt.subplots(2, 2, figsize=(8, 7))
     for axis, regime in zip(axes.flat, REGIMES, strict=True):
         values = np.zeros((5, 5), dtype=int)
@@ -336,7 +424,7 @@ def _figures(output: Path, tables: dict[str, list[dict]]) -> list[str]:
         image = axis.imshow(values, cmap="Blues")
         axis.set(title=regime, xlabel="Predicha", ylabel="Real")
         figure.colorbar(image, ax=axis, fraction=0.046, pad=0.04)
-    confusion_path = _save(figure, output / "matrices_confusion.png")
+    confusion_path = _save(figure, output / "matrices_confusion.jpg", tables)
     rows = tables["importancia_permutacion.csv"]
     figure, axis = plt.subplots(figsize=(9, 5.5))
     axis.barh(
@@ -346,7 +434,7 @@ def _figures(output: Path, tables: dict[str, list[dict]]) -> list[str]:
         capsize=3,
     )
     axis.set_xlabel("Aumento de costo por permutación")
-    importance_path = _save(figure, output / "importancia_permutacion.png")
+    importance_path = _save(figure, output / "importancia_permutacion.jpg", tables)
     rows = tables["seleccion_variante.csv"]
     figure, axis = plt.subplots(figsize=(8, 4.5))
     axis.bar(
@@ -357,7 +445,7 @@ def _figures(output: Path, tables: dict[str, list[dict]]) -> list[str]:
     )
     axis.tick_params(axis="x", rotation=20)
     axis.set_ylabel("Costo medio SCANIA en CV")
-    variant_path = _save(figure, output / "seleccion_variante.png")
+    variant_path = _save(figure, output / "seleccion_variante.jpg", tables)
     return [
         str(path)
         for path in (
@@ -371,10 +459,11 @@ def _figures(output: Path, tables: dict[str, list[dict]]) -> list[str]:
     ]
 
 
-def _save(figure, path: Path) -> Path:
-    figure.tight_layout()
-    figure.savefig(path, dpi=300)
-    plt.close(figure)
+def _save(figure, path: Path, tables: dict) -> Path:
+    try:
+        path.write_bytes(matplotlib_jpg(figure, _figure_explanation(path.stem, tables)))
+    finally:
+        plt.close(figure)
     return path
 
 
@@ -386,6 +475,10 @@ def _markdown(
         lines.extend(
             (
                 f"## {name.removesuffix('.csv').replace('_', ' ').title()}",
+                "",
+                _table_explanation(name, rows).markdown(),
+                "",
+                f"[Descargar tabla en Excel]({Path(name).with_suffix('.xlsx').name})",
                 "",
                 _table(rows),
                 "",
@@ -399,13 +492,61 @@ def _markdown(
             json.dumps(provenance, ensure_ascii=False, indent=2),
             "```",
             "",
-            "## Figuras PNG a 300 dpi",
+            "## Figuras JPG a 600 DPI",
             "",
-            *[f"- {Path(figure).name}" for figure in figures],
+            *[
+                f"![{Path(figure).stem}]({Path(figure).name})\n\n"
+                f"[Descargar imagen JPG · 600 DPI]({Path(figure).name})\n\n"
+                f"{_figure_explanation(Path(figure).stem, tables).markdown()}\n"
+                for figure in figures
+            ],
             "",
         )
     )
     path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _html_report(tables: dict, figures: list[str]) -> str:
+    sections = []
+    for name, rows in tables.items():
+        explanation = _table_explanation(name, rows)
+        fields = list(dict.fromkeys(key for row in rows for key in row))
+        headers = "".join(f"<th>{html.escape(field)}</th>" for field in fields)
+        body = "".join(
+            "<tr>"
+            + "".join(
+                f"<td>{html.escape(str(row.get(field, '')))}</td>" for field in fields
+            )
+            + "</tr>"
+            for row in rows
+        )
+        xlsx = Path(name).with_suffix(".xlsx").name
+        sections.append(
+            f"<section><h2>{html.escape(explanation.title)}</h2>"
+            f"{explanation_html(explanation)}"
+            f'<a download href="{xlsx}">Descargar tabla en Excel</a>'
+            f"<table><thead><tr>{headers}</tr></thead><tbody>{body}</tbody></table></section>"
+        )
+    for figure in figures:
+        name = Path(figure).name
+        explanation = _figure_explanation(Path(figure).stem, tables)
+        sections.append(
+            f"<section><h2>{html.escape(explanation.title)}</h2>"
+            f'<img src="{name}" alt="{html.escape(explanation.measure)}">'
+            f"{explanation_html(explanation)}"
+            f'<a download href="{name}">Descargar imagen JPG · 600 DPI</a></section>'
+        )
+    return (
+        '<!doctype html><html lang="es"><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        "<title>MineTwin · Resultados reproducibles</title><style>"
+        "body{font:15px system-ui;color:#243444;margin:32px}section{margin:32px 0;overflow:auto}"
+        "table{border-collapse:collapse}th,td{padding:8px;border:1px solid #ddd}"
+        "img{max-width:100%;height:auto}a{display:inline-block;margin:12px 0}"
+        "</style><h1>MineTwin · Resultados reproducibles</h1>"
+        + "".join(sections)
+        + "</html>"
+    )
 
 
 def _table(rows: list[dict]) -> str:

@@ -10,6 +10,7 @@ import numpy as np
 from minetwin.learning.contracts import TrainingConfig
 from minetwin.learning.data import CachedSplit
 from minetwin.learning.metrics import classification_metrics
+from minetwin.learning.priority import priority_baseline
 from minetwin.learning.scaling import FederatedStandardScaler
 from minetwin.learning.training import fit_centralized_candidate
 
@@ -70,11 +71,13 @@ def run_model_selection(
             effective.folds,
             effective.seed,
         )
-        assignments = _fold_assignments(train, folds)
+        assignments = vehicle_fold_assignments(train, folds)
         fold_rows = []
         history_rows = []
+        prediction_rows: dict[str, list[dict]] = {}
         for candidate_index, candidate in enumerate(effective.candidates, 1):
             candidate_id = f"MLP-{candidate_index:02d}"
+            prediction_rows[candidate_id] = []
             for fold in range(effective.folds):
                 training = folds != fold
                 validation = folds == fold
@@ -98,6 +101,9 @@ def run_model_selection(
                         **_candidate_fields(candidate, train.features.shape[1]),
                         **_scalar_metrics(metrics),
                     }
+                )
+                prediction_rows[candidate_id].extend(
+                    _prediction_rows(train, validation, probabilities, fold)
                 )
                 history_rows.extend(
                     {
@@ -127,6 +133,10 @@ def run_model_selection(
         _write_csv(output / "fold_metrics.csv", fold_rows)
         _write_csv(output / "training_history.csv", history_rows)
         _write_csv(output / "candidates.csv", candidates)
+        _write_priority_baseline(
+            output,
+            prediction_rows[selected["candidate"]],
+        )
         _write_json(output / "eda.json", describe_cache(cache))
         _write_json(output / "selection.json", selection)
         manifest.update(
@@ -180,6 +190,31 @@ def grouped_vehicle_folds(
     return np.asarray([assignment[str(vehicle)] for vehicle in vehicle_ids])
 
 
+def latest_vehicle_mask(
+    vehicle_ids: np.ndarray,
+    time_steps: np.ndarray | None,
+    allowed: np.ndarray | None = None,
+) -> np.ndarray:
+    if time_steps is None or not np.isfinite(time_steps).all():
+        raise ValueError("Se requieren pasos temporales finitos.")
+    if len(time_steps) != len(vehicle_ids):
+        raise ValueError("Los pasos temporales no coinciden con los vehículos.")
+    if allowed is None:
+        allowed = np.ones(len(vehicle_ids), dtype=bool)
+    allowed = np.asarray(allowed, dtype=bool)
+    if len(allowed) != len(vehicle_ids):
+        raise ValueError("La selección no coincide con los vehículos.")
+    latest = {}
+    for index in np.flatnonzero(allowed):
+        vehicle = str(vehicle_ids[index])
+        previous = latest.get(vehicle)
+        if previous is None or time_steps[index] > time_steps[previous]:
+            latest[vehicle] = index
+    result = np.zeros(len(vehicle_ids), dtype=bool)
+    result[list(latest.values())] = True
+    return result
+
+
 def describe_cache(cache: Path) -> dict:
     cache = Path(cache)
     metadata = json.loads((cache / "metadata.json").read_text(encoding="utf-8"))
@@ -201,6 +236,7 @@ def describe_cache(cache: Path) -> dict:
     return {
         "feature_count": len(train.feature_names),
         "feature_config": metadata["feature_config"],
+        "feature_schema_version": metadata.get("feature_schema_version", 1),
         "sampling": metadata["sampling"],
         "splits": splits,
         "raw_missing_rate": source_summary,
@@ -263,7 +299,7 @@ def _candidate_summary(rows: list[dict]) -> list[dict]:
     return summaries
 
 
-def _fold_assignments(cached: CachedSplit, folds: np.ndarray) -> list[dict]:
+def vehicle_fold_assignments(cached: CachedSplit, folds: np.ndarray) -> list[dict]:
     rows = []
     for vehicle in np.unique(cached.vehicle_ids):
         selected = cached.vehicle_ids == vehicle
@@ -287,6 +323,55 @@ def _candidate_fields(config: TrainingConfig, input_size: int) -> dict:
         "weight_decay": config.weight_decay,
         "parameters": _parameter_count(input_size, config.hidden_sizes, 5),
     }
+
+
+def _prediction_rows(
+    cached: CachedSplit,
+    selected: np.ndarray,
+    probabilities: np.ndarray,
+    fold: int,
+) -> list[dict]:
+    indexes = np.flatnonzero(selected)
+    return [
+        {
+            "fold": fold + 1,
+            "vehicle_id": str(cached.vehicle_ids[index]),
+            "node_id": str(cached.nodes[index]),
+            "time_step": (
+                float(cached.time_steps[index])
+                if cached.time_steps is not None
+                else float("nan")
+            ),
+            "label": int(cached.labels[index]),
+            **{
+                f"probability_{label}": float(probabilities[position, label])
+                for label in range(5)
+            },
+        }
+        for position, index in enumerate(indexes)
+    ]
+
+
+def _write_priority_baseline(output: Path, rows: list[dict]) -> None:
+    _write_csv(output / "selected_oof_predictions.csv", rows)
+    time_steps = np.asarray([row["time_step"] for row in rows])
+    if not np.isfinite(time_steps).all():
+        return
+    probabilities = np.asarray(
+        [[row[f"probability_{label}"] for label in range(5)] for row in rows]
+    )
+    queue, summary = priority_baseline(
+        np.asarray([row["label"] for row in rows]),
+        probabilities,
+        np.asarray([row["vehicle_id"] for row in rows]),
+        np.asarray([row["node_id"] for row in rows]),
+        time_steps,
+    )
+    _write_csv(output / "priority_baseline.csv", queue)
+    _write_json(
+        output / "priority_baseline.json",
+        {"score": "probability_4", "capacities": summary},
+    )
 
 
 def _parameter_count(input_size: int, hidden: tuple[int, ...], output: int) -> int:

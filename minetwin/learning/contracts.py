@@ -7,12 +7,15 @@ class FeatureConfig:
     window_size: int = 12
     stride: int = 1
     signed_log: bool = True
+    usage_features: bool = False
 
     def __post_init__(self) -> None:
         if type(self.window_size) is not int or self.window_size < 1:
             raise ValueError("window_size debe ser un entero positivo.")
         if type(self.stride) is not int or self.stride < 1:
             raise ValueError("stride debe ser un entero positivo.")
+        if type(self.usage_features) is not bool:
+            raise TypeError("usage_features debe ser booleano.")
 
 
 @dataclass(frozen=True)

@@ -1,4 +1,4 @@
-﻿import argparse
+import argparse
 import csv
 import hashlib
 import html
@@ -9,6 +9,15 @@ from pathlib import Path
 
 import numpy as np
 
+from minetwin.exports import (
+    XLSX_MIME,
+    Explanation,
+    download_link,
+    explained_rows,
+    explanation_html,
+    filename,
+    table_xlsx,
+)
 from minetwin.langflow_client import FLOW_INSTRUCTIONS, PROMPT_VERSION
 from minetwin.learning.contracts import TrainingConfig
 from minetwin.learning.provenance import (
@@ -124,10 +133,8 @@ def build_study_report(
     folds = _read_csv(selection / "fold_metrics.csv")
     importance = _read_csv(interpretability / "permutation_importance.csv")
     if not all((learning_stats, candidates, folds, importance)):
-        raise ValueError("El reporte requiere resultados SCANIA no vacÃ­os.")
-    _verify_real_report_sources(
-        summary, cache, learning, scania, federation, langflow
-    )
+        raise ValueError("El reporte requiere resultados SCANIA no vacíos.")
+    _verify_real_report_sources(summary, cache, learning, scania, federation, langflow)
     summary["learning_statistics"] = learning_stats
     summary["interpretability"]["importance"] = importance
     summary["sources"]["sha256"] = {
@@ -220,16 +227,8 @@ def _paired_result(
 ) -> dict:
     selected = {(row[group], *(row[key] for key in keys)): row for row in rows}
     shared = sorted(
-        {
-            tuple(row[key] for key in keys)
-            for row in rows
-            if row[group] == reference
-        }
-        & {
-            tuple(row[key] for key in keys)
-            for row in rows
-            if row[group] == candidate
-        },
+        {tuple(row[key] for key in keys) for row in rows if row[group] == reference}
+        & {tuple(row[key] for key in keys) for row in rows if row[group] == candidate},
         key=str,
     )
     reference_values = np.asarray(
@@ -331,7 +330,7 @@ def _fail_run(output: Path) -> None:
 def _read_complete(path: Path) -> dict:
     manifest = _read_json(Path(path) / "manifest.json")
     if manifest.get("status") != "complete":
-        raise ValueError(f"La ejecuciÃ³n {path} no estÃ¡ completa.")
+        raise ValueError(f"La ejecución {path} no está completa.")
     return manifest
 
 
@@ -406,9 +405,7 @@ def _stable_seed(*values) -> int:
 
 
 def _validate_unique_integers(values, name, minimum: int = 0) -> None:
-    if not values or any(
-        type(value) is not int or value < minimum for value in values
-    ):
+    if not values or any(type(value) is not int or value < minimum for value in values):
         raise ValueError(f"{name} debe contener enteros desde {minimum}.")
     if len(set(values)) != len(values):
         raise ValueError(f"{name} no puede contener repetidos.")
@@ -448,7 +445,7 @@ def _verify_real_report_sources(
     if metadata["source_manifest_sha256"] != file_sha256(
         scania / "dataset_manifest.json"
     ):
-        raise ValueError("La cachÃ© no procede del dataset indicado.")
+        raise ValueError("La caché no procede del dataset indicado.")
     if (
         eda["feature_config"] != metadata["feature_config"]
         or eda["feature_count"] != metadata["feature_count"]
@@ -458,17 +455,11 @@ def _verify_real_report_sources(
         or len(learning_manifest["config"]["seeds"]) != summary["learning"]["seeds"]
         or 100 not in learning_manifest["config"]["seeds"]
     ):
-        raise ValueError("La selecciÃ³n, la cachÃ© y el aprendizaje no coinciden.")
-    validation = next(
-        row for row in dataset["splits"] if row["split"] == "validation"
-    )
-    eda_validation = next(
-        row for row in eda["splits"] if row["split"] == "validation"
-    )
+        raise ValueError("La selección, la caché y el aprendizaje no coinciden.")
+    validation = next(row for row in dataset["splits"] if row["split"] == "validation")
+    eda_validation = next(row for row in eda["splits"] if row["split"] == "validation")
     available_classes = sorted(
-        int(label)
-        for label, count in eda_validation["classes"].items()
-        if count
+        int(label) for label, count in eda_validation["classes"].items() if count
     )
     if (
         not provenance.get("verified")
@@ -481,7 +472,7 @@ def _verify_real_report_sources(
         or file_sha256(federation / "published_states.jsonl")
         != federation_summary.get("published_states_sha256")
     ):
-        raise ValueError("La publicaciÃ³n federada no es verificable o compatible.")
+        raise ValueError("La publicación federada no es verificable o compatible.")
     model_root = learning / "seed_100"
     model_report = _read_json(model_root / "metrics.json")
     training, evaluation_provenance = verified_evaluation_provenance(
@@ -492,8 +483,7 @@ def _verify_real_report_sources(
     if (
         not learning_provenance.get("verified")
         or learning_provenance.get("cache_sha256") != training["cache"]
-        or learning_provenance.get("training_ids", {}).get("100")
-        != training["run_id"]
+        or learning_provenance.get("training_ids", {}).get("100") != training["run_id"]
         or not _matches_provenance(provenance, evaluation_provenance)
         or set(provenance["model_ids"].values()) != {model_id}
         or interpretation["model_id"] != model_id
@@ -503,7 +493,7 @@ def _verify_real_report_sources(
         or not _matches_provenance(interpretation_provenance, evaluation_provenance)
         or interpretation_provenance.get("model_ids") != {regime: model_id}
     ):
-        raise ValueError("La federaciÃ³n y la interpretaciÃ³n usan modelos distintos.")
+        raise ValueError("La federación y la interpretación usan modelos distintos.")
     if (
         flow.get("status") != "complete"
         or flow.get("source") != "SCANIA Component X validation"
@@ -526,7 +516,7 @@ def _verify_real_report_sources(
         or hashlib.sha256(FLOW_INSTRUCTIONS.encode()).hexdigest()
         != flow["prompt_sha256"]
     ):
-        raise ValueError("La evaluaciÃ³n Langflow no es trazable a SCANIA.")
+        raise ValueError("La evaluación Langflow no es trazable a SCANIA.")
 
 
 def _matches_provenance(actual: dict, expected: dict) -> bool:
@@ -556,8 +546,8 @@ def _report_html(summary, candidates, folds) -> str:
             "Dataset oficial y particiones",
             dataset["splits"],
             ("split", "vehicles", "readouts", "features", "missing_values"),
-            "Los tres splits proceden del dataset pÃºblico SCANIA Component X. "
-            "Las variables son anÃ³nimas y no describen operaciones mineras.",
+            "Los tres splits proceden del dataset público SCANIA Component X. "
+            "Las variables son anónimas y no describen operaciones mineras.",
         ),
         _html_table(
             "EDA y ventanas causales",
@@ -586,10 +576,10 @@ def _report_html(summary, candidates, folds) -> str:
                 "class_4",
             ),
             "Las clases muestran desbalance; las ventanas de entrenamiento pueden "
-            "aportar varios ejemplos por vehÃ­culo. La validaciÃ³n permanece separada.",
+            "aportar varios ejemplos por vehículo. La validación permanece separada.",
         ),
         _html_table(
-            "SelecciÃ³n de hiperparÃ¡metros",
+            "Selección de hiperparámetros",
             candidates,
             (
                 "candidate",
@@ -602,11 +592,11 @@ def _report_html(summary, candidates, folds) -> str:
                 "macro_f1_mean",
                 "selected",
             ),
-            "El menor costo medio decide; F1 macro, exactitud balanceada y tamaÃ±o "
+            "El menor costo medio decide; F1 macro, exactitud balanceada y tamaño "
             "del modelo resuelven empates.",
         ),
         _html_table(
-            "ValidaciÃ³n cruzada por vehÃ­culo",
+            "Validación cruzada por vehículo",
             folds,
             (
                 "candidate",
@@ -617,11 +607,11 @@ def _report_html(summary, candidates, folds) -> str:
                 "balanced_accuracy",
                 "macro_pr_auc",
             ),
-            "NingÃºn vehÃ­culo debe aparecer en entrenamiento y validaciÃ³n del mismo "
-            "fold; los folds pertenecen a la selecciÃ³n, no a la prueba final.",
+            "Ningún vehículo debe aparecer en entrenamiento y validación del mismo "
+            "fold; los folds pertenecen a la selección, no a la prueba final.",
         ),
         _html_table(
-            "Aprendizaje por rÃ©gimen",
+            "Aprendizaje por régimen",
             [
                 {
                     "regime": regime,
@@ -645,41 +635,38 @@ def _report_html(summary, candidates, folds) -> str:
             "macro muestran rendimiento en clases poco frecuentes.",
         ),
         _html_table(
-            "Pruebas estadÃ­sticas pareadas",
+            "Pruebas estadísticas pareadas",
             summary["learning_statistics"],
             statistical_fields,
             "Mejora positiva favorece al candidato. El intervalo bootstrap, Wilcoxon "
             "pareado, Holm y la biserial de rangos describen incertidumbre, "
-            "significancia y tamaÃ±o del efecto.",
+            "significancia y tamaño del efecto.",
         ),
         _html_table(
-            "Interpretabilidad por permutaciÃ³n",
+            "Interpretabilidad por permutación",
             [
                 row
                 for row in interpretation["importance"]
                 if row["dimension"] == "source_variable"
             ][:10],
             ("group", "features", "mean_cost_increase", "sd_cost_increase"),
-            "Un aumento de costo al permutar indica asociaciÃ³n predictiva en "
-            "validaciÃ³n; no identifica una pieza fÃ­sica ni demuestra causalidad.",
+            "Un aumento de costo al permutar indica asociación predictiva en "
+            "validación; no identifica una pieza física ni demuestra causalidad.",
         ),
         _html_table(
-            "PublicaciÃ³n federada por particiÃ³n",
-            [
-                {"node": node, **values}
-                for node, values in federation["nodes"].items()
-            ],
+            "Publicación federada por partición",
+            [{"node": node, **values} for node, values in federation["nodes"].items()],
             (
                 "node",
                 "private_records",
                 "published_states",
                 "mean_observation_quality",
             ),
-            "Los nodos son particiones lÃ³gicas de un mismo dataset. La calidad "
-            "mide cobertura de lecturas, no precisiÃ³n del modelo.",
+            "Los nodos son particiones lógicas de un mismo dataset. La calidad "
+            "mide cobertura de lecturas, no precisión del modelo.",
         ),
         _html_table(
-            "EvaluaciÃ³n Langflow y revisiÃ³n humana",
+            "Evaluación Langflow y revisión humana",
             [
                 {"measure": "Casos", "value": flow["counts"]["cases"]},
                 {"measure": "Respuestas", "value": flow["counts"]["responses"]},
@@ -692,15 +679,15 @@ def _report_html(summary, candidates, folds) -> str:
                     "measure": "Respuestas revisadas",
                     "value": review["reviewed_responses"],
                 },
-                {"measure": "PuntuaciÃ³n media", "value": review["overall_mean_score"]},
+                {"measure": "Puntuación media", "value": review["overall_mean_score"]},
                 *(
                     {"measure": metric, "value": value}
                     for metric, value in review["mean_scores"].items()
                 ),
             ],
             ("measure", "value"),
-            "Las puntuaciones son revisiÃ³n humana de explicaciones; no sustituyen "
-            "las mÃ©tricas del modelo predictivo ni validan un despliegue minero.",
+            "Las puntuaciones son revisión humana de explicaciones; no sustituyen "
+            "las métricas del modelo predictivo ni validan un despliegue minero.",
         ),
     ]
     sources = summary["sources"]["sha256"]
@@ -710,22 +697,22 @@ def _report_html(summary, candidates, folds) -> str:
             [{"artifact": name, "sha256": digest} for name, digest in sources.items()],
             ("artifact", "sha256"),
             "Las huellas identifican los archivos usados por este reporte. El modelo, "
-            "el flujo y el prompt se vinculan a la publicaciÃ³n verificada.",
+            "el flujo y el prompt se vinculan a la publicación verificada.",
         )
     )
     return f"""<!doctype html>
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>MineTwin Â· EvaluaciÃ³n final</title><style>
+<title>MineTwin · Evaluación final</title><style>
 body{{background:#f4f6f8;color:#1b2430;font:14px system-ui;margin:0;padding:32px}}main{{max-width:1500px;margin:auto}}
 h1,h2{{font-weight:600}}p{{color:#5f6b7a}}section{{background:#fff;border:1px solid #d5dbe3;border-radius:12px;margin:20px 0;padding:20px;overflow:auto}}
 table{{border-collapse:collapse;width:100%}}th,td{{border-bottom:1px solid #d5dbe3;padding:9px;text-align:right;white-space:nowrap}}th{{color:#9a6200}}th:first-child,td:first-child{{text-align:left}}
-</style></head><body><main><h1>MineTwin Â· EvaluaciÃ³n final</h1>
-<p>SCANIA Component X v{html.escape(str(dataset['version']))}: {dataset['features']} variables. El coordinador recibiÃ³ {federation['coordinator_states']} estados publicados y {federation['coordinator_raw_features']} variables crudas.</p>
-<p>Transferencia federada: {transfer['messages']} mensajes, {transfer['payload_bytes']} bytes medidos y estimados, y {transfer['raw_records']} registros crudos publicados.</p>
-<p>ReducciÃ³n del tamaÃ±o de estados publicados frente a centralizar las variables: {federation['publication_reduction_ratio']:.2%}. Es una comparaciÃ³n del tamaÃ±o publicado, no una mediciÃ³n de red.</p>
-<p>Modelo {html.escape(interpretation['model_id'])} Â· flujo {html.escape(flow['flow_id'])} versiÃ³n {html.escape(flow['flow_version'])} Â· modelo lingÃ¼Ã­stico {html.escape(flow['language_model_id'])}.</p>
-<p>Estudio retrospectivo en camiones pesados. Las particiones federadas son experimentales sobre una sola fuente pÃºblica; no se validÃ³ en mina, entre contratistas ni en operaciÃ³n en tiempo real.</p>
-{''.join(sections)}</main></body></html>"""
+</style></head><body><main><h1>MineTwin · Evaluación final</h1>
+<p>SCANIA Component X v{html.escape(str(dataset["version"]))}: {dataset["features"]} variables. El coordinador recibió {federation["coordinator_states"]} estados publicados y {federation["coordinator_raw_features"]} variables crudas.</p>
+<p>Transferencia federada: {transfer["messages"]} mensajes, {transfer["payload_bytes"]} bytes medidos y estimados, y {transfer["raw_records"]} registros crudos publicados.</p>
+<p>Reducción del tamaño de estados publicados frente a centralizar las variables: {federation["publication_reduction_ratio"]:.2%}. Es una comparación del tamaño publicado, no una medición de red.</p>
+<p>Modelo {html.escape(interpretation["model_id"])} · flujo {html.escape(flow["flow_id"])} versión {html.escape(flow["flow_version"])} · modelo lingüístico {html.escape(flow["language_model_id"])}.</p>
+<p>Estudio retrospectivo en camiones pesados. Las particiones federadas son experimentales sobre una sola fuente pública; no se validó en mina, entre contratistas ni en operación en tiempo real.</p>
+{"".join(sections)}</main></body></html>"""
 
 
 def _html_table(
@@ -734,16 +721,35 @@ def _html_table(
     fields: tuple[str, ...],
     explanation: str,
 ) -> str:
+    visible_rows = [{field: row.get(field, "") for field in fields} for row in rows]
+    notes = explained_rows(
+        Explanation(
+            title=title,
+            measure=f"{title}: valores de las columnas {', '.join(fields)}.",
+            reading=explanation,
+            method="Tabla construida a partir de los artefactos verificados del reporte; consultar Trazabilidad y summary.json.",
+            limitation="Evaluación retrospectiva de SCANIA Component X; las asociaciones y diferencias descriptivas no demuestran causalidad ni validan un despliegue minero.",
+        ),
+        visible_rows,
+    )
+    download = download_link(
+        table_xlsx(visible_rows, notes, parse_numbers=True),
+        f"{filename(title)}.xlsx",
+        XLSX_MIME,
+        "Descargar tabla en Excel",
+    )
     headers = "".join(f"<th>{html.escape(field)}</th>" for field in fields)
     body = "".join(
         "<tr>"
-        + "".join(f"<td>{html.escape(str(row.get(field, '')))}</td>" for field in fields)
+        + "".join(
+            f"<td>{html.escape(str(row.get(field, '')))}</td>" for field in fields
+        )
         + "</tr>"
         for row in rows
     )
     return (
         f"<section><h2>{html.escape(title)}</h2>"
-        f"<p>CÃ³mo interpretarlo: {html.escape(explanation)}</p>"
+        f"{explanation_html(notes)}{download}"
         f"<table><thead><tr>{headers}</tr></thead><tbody>{body}</tbody></table></section>"
     )
 
@@ -752,7 +758,9 @@ def _integers(value: str) -> tuple[int, ...]:
     try:
         result = tuple(int(item.strip()) for item in value.split(","))
     except ValueError as error:
-        raise argparse.ArgumentTypeError("Se requieren enteros separados por comas.") from error
+        raise argparse.ArgumentTypeError(
+            "Se requieren enteros separados por comas."
+        ) from error
     try:
         _validate_unique_integers(result, "values")
     except ValueError as error:
@@ -761,7 +769,7 @@ def _integers(value: str) -> tuple[int, ...]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="EvaluaciÃ³n final de MineTwin.")
+    parser = argparse.ArgumentParser(description="Evaluación final de MineTwin.")
     modes = parser.add_subparsers(dest="mode", required=True)
     learning = modes.add_parser("learning")
     learning.add_argument("--cache", type=Path, required=True)

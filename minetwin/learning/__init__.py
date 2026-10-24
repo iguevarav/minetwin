@@ -12,8 +12,10 @@ from minetwin.learning.interpretability import (
     run_permutation_importance,
 )
 from minetwin.learning.metrics import (
+    class_average_precision,
     classification_metrics,
     cost_sensitive_predictions,
+    expected_decision_costs,
     mean_misclassification_cost,
 )
 from minetwin.learning.scaling import FederatedStandardScaler
@@ -35,9 +37,11 @@ __all__ = [
     "TorchRiskPrognosticator",
     "TrainingConfig",
     "WindowVectorizer",
+    "class_average_precision",
     "classification_metrics",
     "cost_sensitive_predictions",
     "describe_cache",
+    "expected_decision_costs",
     "export_federated_inference",
     "feature_groups",
     "grouped_vehicle_folds",

@@ -30,7 +30,11 @@ Ubica estos ocho archivos CSV en `minetwin/data/scania/`:
 | `07_federacion` | Estados de riesgo publicados sin variables crudas. |
 | `08_diagnostico` | Baselines, métricas y matrices de confusión de validation. |
 | `09_interpretabilidad` | Importancia por permutación. |
-| `10_reporte/articulo` | Tablas, figuras PNG a 300 dpi y procedencia del artículo. |
+| `10_reporte/articulo` | Tablas CSV y Excel, figuras JPG a 600 DPI, reportes HTML y Markdown y procedencia del artículo. |
+
+## Informe en Streamlit
+
+En la navegación principal, **Resultados del artículo** muestra el HTML de `results/10_reporte/articulo/report.html` con sus figuras y enlaces de descarga. La aplicación lee los archivos actuales cada vez que se abre la vista; al regenerar el informe, se muestra la nueva versión. La vista **Aprendizaje** conserva los gráficos interactivos.
 
 ## Flujo reproducible
 
@@ -60,6 +64,34 @@ python -m streamlit run app.py
 ```
 
 Langflow es opcional y solo genera explicaciones sobre estados de riesgo publicados. No modifica predicciones ni ejecuta acciones de mantenimiento.
+
+Cada tabla incluye su interpretación y una descarga Excel (`.xlsx`) con hojas
+`Datos` e `Interpretación`. Cada gráfico ofrece una descarga JPG a **600 DPI**
+con fondo blanco y un pie que explica la medida, lectura, método, resultado,
+fuente y límites. En la demo feria, abra **Descargas y explicación de las figuras
+y tablas de la demo** y seleccione el camión, la flota o la federación.
+
+Las descargas se generan al solicitarlas. Para renderizar los gráficos de Plotly,
+Kaleido requiere Chrome o Chromium instalado ([documentación de Plotly](https://plotly.com/python/static-image-export/)).
+Si falta, puede instalarlo con `plotly_get_chrome` tras instalar las dependencias
+del proyecto. La exportación rasteriza a 600 píxeles por pulgada y guarda la
+densidad en el JPG; no amplía una captura de pantalla.
+
+Para reemplazar las seis figuras anteriores del artículo desde sus datos originales:
+
+```powershell
+python -m minetwin.learning.article_report --results results --output results\10_reporte\articulo --overwrite
+```
+
+Este comando actualiza los Excel, los reportes y los JPG, retira los seis PNG
+reemplazados al finalizar y registra dimensiones, DPI y huellas en
+`exportaciones.json`. No reentrena modelos. JPEG se guarda con calidad 95 y sin
+submuestreo de color ([documentación de Pillow](https://pillow.readthedocs.io/en/stable/handbook/image-file-formats.html#jpeg)).
+
+El diagnóstico histórico ubicado directamente en `10_reporte` puede actualizarse
+desde sus propios CSV con `python -m minetwin.learning.legacy_report`. Conserva el
+texto histórico, añade explicaciones y descargas Excel y reemplaza sus seis PNG
+por gráficos JPG a 600 DPI, regenerados desde los valores guardados.
 
 ## Verificación
 

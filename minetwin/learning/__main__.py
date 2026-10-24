@@ -2,14 +2,18 @@ import argparse
 import json
 from pathlib import Path
 
+from minetwin.learning.comparison import run_representation_comparison
 from minetwin.learning.contracts import FeatureConfig, TrainingConfig
 from minetwin.learning.data import prepare_learning_cache
+from minetwin.learning.demonstration import prepare_demonstration
 from minetwin.learning.diagnostics import run_model_diagnostics
 from minetwin.learning.federation import export_federated_inference
+from minetwin.learning.final_evaluation import run_final_evaluation
 from minetwin.learning.interpretability import (
     PermutationConfig,
     run_permutation_importance,
 )
+from minetwin.learning.priority_policy import run_priority_policy
 from minetwin.learning.selection import SelectionConfig, run_model_selection
 from minetwin.learning.training import train_learning_regimes
 
@@ -25,6 +29,7 @@ def main() -> None:
     prepare.add_argument("--output", type=Path, required=True)
     prepare.add_argument("--window-size", type=int, default=12)
     prepare.add_argument("--stride", type=int, default=1)
+    prepare.add_argument("--usage-features", action="store_true")
     train = commands.add_parser("train")
     train.add_argument("--cache", type=Path, required=True)
     train.add_argument("--output", type=Path, required=True)
@@ -38,6 +43,27 @@ def main() -> None:
     select.add_argument("--output", type=Path, required=True)
     select.add_argument("--folds", type=int, default=5)
     select.add_argument("--seed", type=int, default=42)
+    compare = commands.add_parser("compare")
+    compare.add_argument("--baseline-cache", type=Path, required=True)
+    compare.add_argument("--usage-cache", type=Path, required=True)
+    compare.add_argument("--baseline-selection", type=Path, required=True)
+    compare.add_argument("--output", type=Path, required=True)
+    compare.add_argument("--folds", type=int, default=5)
+    compare.add_argument("--seed", type=int, default=42)
+    compare.add_argument("--review-fraction", type=float, default=0.01)
+    prioritize = commands.add_parser("prioritize")
+    prioritize.add_argument("--cache", type=Path, required=True)
+    prioritize.add_argument("--comparison", type=Path, required=True)
+    prioritize.add_argument("--output", type=Path, required=True)
+    evaluate = commands.add_parser("evaluate")
+    evaluate.add_argument("--cache", type=Path, required=True)
+    evaluate.add_argument("--comparison", type=Path, required=True)
+    evaluate.add_argument("--policy", type=Path, required=True)
+    evaluate.add_argument("--output", type=Path, required=True)
+    demo = commands.add_parser("demo")
+    demo.add_argument("--policy", type=Path, required=True)
+    demo.add_argument("--evaluation", type=Path, required=True)
+    demo.add_argument("--output", type=Path, required=True)
     publish = commands.add_parser("publish")
     publish.add_argument("--cache", type=Path, required=True)
     publish.add_argument("--models", type=Path, required=True)
@@ -73,7 +99,11 @@ def main() -> None:
                 args.dataset,
                 args.phase1,
                 args.output,
-                FeatureConfig(window_size=args.window_size, stride=args.stride),
+                FeatureConfig(
+                    window_size=args.window_size,
+                    stride=args.stride,
+                    usage_features=args.usage_features,
+                ),
             )
         elif args.command == "train":
             result = train_learning_regimes(
@@ -92,6 +122,31 @@ def main() -> None:
                 args.cache,
                 args.output,
                 SelectionConfig(folds=args.folds, seed=args.seed),
+            )
+        elif args.command == "compare":
+            result = run_representation_comparison(
+                args.baseline_cache,
+                args.usage_cache,
+                args.baseline_selection,
+                args.output,
+                args.folds,
+                args.seed,
+                args.review_fraction,
+            )
+        elif args.command == "prioritize":
+            result = run_priority_policy(args.cache, args.comparison, args.output)
+        elif args.command == "evaluate":
+            result = run_final_evaluation(
+                args.cache,
+                args.comparison,
+                args.policy,
+                args.output,
+            )
+        elif args.command == "demo":
+            result = prepare_demonstration(
+                args.policy,
+                args.evaluation,
+                args.output,
             )
         elif args.command == "publish":
             result = export_federated_inference(
